@@ -379,6 +379,12 @@ int run_interactive(const pi::ai::Model& model,
         }
 
         if (input->on_key(*k)) {
+            // INC-004: input mutated its text — must re-render the screen
+            // or the user won't see what they typed (mirror upstream
+            // Editor's tui.requestRender() that fires on any change).
+            // render() is idempotent (no-op if frame unchanged) so the
+            // cost is bounded.
+            tui.render();
             if (input->take_submit()) {
                 std::string text = input->text();
                 input->set_text("");

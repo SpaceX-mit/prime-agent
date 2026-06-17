@@ -34,8 +34,42 @@ std::vector<std::string> Input::render(int width) const {
     line += theme_.input_bg;
     line += theme_.input_fg;
     line += prompt_;
-    line += text_;
-    // Add trailing reset + a space to ensure cursor visible.
+
+    // Render text with an inverse-video cursor at `cursor_` so the user
+    // can see where they are. Mirrors upstream pi's Editor render which
+    // uses ANSI reverse-video (`\x1b[7m`) over the grapheme under the
+    // cursor (or a trailing space if the cursor is at EOL).
+    if (cursor_ <= text_.size()) {
+        std::string before(text_, 0, cursor_);
+        std::string after(text_, cursor_, std::string::npos);
+        std::string cursor_glyph;
+        std::string after_rest;
+        if (!after.empty()) {
+            // Find the first UTF-8 character in `after` and highlight it.
+            size_t i = 0;
+            // Walk past leading continuation bytes (shouldn't happen since
+            // we always start at a char boundary, but be defensive).
+            while (i < after.size() &&
+                   ((unsigned char)after[i] & 0xC0) == 0x80)
+                ++i;
+            size_t char_end = i + 1;
+            while (char_end < after.size() &&
+                   ((unsigned char)after[char_end] & 0xC0) == 0x80)
+                ++char_end;
+            cursor_glyph = after.substr(i, char_end - i);
+            after_rest = after.substr(char_end);
+        } else {
+            cursor_glyph = " ";
+        }
+        line += before;
+        line += "\x1b[7m";   // reverse video
+        line += cursor_glyph;
+        line += "\x1b[0m";
+        line += after_rest;
+    } else {
+        // Out-of-range cursor (shouldn't happen, but be safe).
+        line += text_;
+    }
     line += "\x1b[0m ";
     return {line};
 }

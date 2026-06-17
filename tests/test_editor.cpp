@@ -3,6 +3,7 @@
 #include "test_framework.hpp"
 
 #include "pi_tui/components/editor.hpp"
+#include "pi_tui/components/input.hpp"
 #include "pi_tui/terminal.hpp"
 #include "pi_tui/theme.hpp"
 
@@ -101,4 +102,76 @@ TEST_CASE("Editor cancel via Ctrl-C") {
     k.kind = KeyEvent::Kind::CtrlC; ed.on_key(k);
     CHECK(ed.cancel_pending());
     CHECK(ed.take_cancel());
+}
+
+// ---------------------------------------------------------------------------
+// INC-004 regression tests: input box must show what the user types.
+// Bug:  input->on_key() mutated text_ but tui.render() was never called,
+//       so the screen never reflected the keystrokes.
+// Fix:  Input::render() now emits an inverse-video cursor at cursor_ (so
+//       the cursor is visible) and the interactive-mode main loop calls
+//       tui.render() after every input->on_key() (mirrors upstream
+//       Editor's tui.requestRender() pattern).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Input render includes typed text") {
+    Theme theme = Theme::dark();
+    components::Input input(theme);
+    input.set_prompt("> ");
+    KeyEvent k;
+    k.kind = KeyEvent::Kind::Char; k.ch = 'h'; input.on_key(k);
+    k.kind = KeyEvent::Kind::Char; k.ch = 'i'; input.on_key(k);
+    auto lines = input.render(80);
+    CHECK(lines.size() == 1);
+    // The render output must contain the typed characters.
+    CHECK(lines[0].find("hi") != std::string::npos);
+}
+
+TEST_CASE("Input render shows cursor (inverse-video) at cursor position") {
+    Theme theme = Theme::dark();
+    components::Input input(theme);
+    input.set_prompt("> ");
+    KeyEvent k;
+    k.kind = KeyEvent::Kind::Char; k.ch = 'a'; input.on_key(k);
+    k.kind = KeyEvent::Kind::Char; k.ch = 'b'; input.on_key(k);
+    k.kind = KeyEvent::Kind::Char; k.ch = 'c'; input.on_key(k);
+    auto lines = input.render(80);
+    // After typing "abc", cursor is at end, so render should contain
+    // inverse-video space (cursor glyph for EOL position).
+    CHECK(lines[0].find("\x1b[7m") != std::string::npos);
+    // And the typed text "abc" should still be visible.
+    CHECK(lines[0].find("abc") != std::string::npos);
+}
+
+TEST_CASE("Input render with cursor in middle highlights that grapheme") {
+    Theme theme = Theme::dark();
+    components::Input input(theme);
+    input.set_prompt("> ");
+    KeyEvent k;
+    for (char c : std::string("hello")) {
+        k.kind = KeyEvent::Kind::Char; k.ch = c; input.on_key(k);
+    }
+    // Now move cursor 2 steps back so it sits on 'l' (position 3).
+    k.kind = KeyEvent::Kind::Left; input.on_key(k);
+    k.kind = KeyEvent::Kind::Left; input.on_key(k);
+    auto lines = input.render(80);
+    // "hel" then inverse-video "l" then "o"
+    CHECK(lines[0].find("hel") != std::string::npos);
+    CHECK(lines[0].find("\x1b[7ml\x1b[0m") != std::string::npos);
+    CHECK(lines[0].find("o") != std::string::npos);
+}
+
+TEST_CASE("Input backspace updates render output") {
+    Theme theme = Theme::dark();
+    components::Input input(theme);
+    input.set_prompt("> ");
+    KeyEvent k;
+    for (char c : std::string("xy")) {
+        k.kind = KeyEvent::Kind::Char; k.ch = c; input.on_key(k);
+    }
+    k.kind = KeyEvent::Kind::Backspace; input.on_key(k);
+    auto lines = input.render(80);
+    // 'y' should be gone, 'x' should remain.
+    CHECK(lines[0].find("xy") == std::string::npos);
+    CHECK(lines[0].find("x") != std::string::npos);
 }

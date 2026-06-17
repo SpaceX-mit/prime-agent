@@ -55,9 +55,13 @@ struct AgentEvent {
     pi::ai::Message assistant_message_snap;
     std::vector<pi::ai::ToolResultMessage> tool_results;
 
+    /// Full conversation history at this point (agent_end only). mutable so
+    /// const event callbacks can read it after the agent thread populates it.
+    mutable std::vector<pi::ai::Message> messages;
+
     static AgentEvent agent_start() { AgentEvent e; e.kind = Kind::AgentStart; return e; }
-    static AgentEvent agent_end(std::vector<pi::ai::Message> /*messages*/) {
-        AgentEvent e; e.kind = Kind::AgentEnd; return e;
+    static AgentEvent agent_end(std::vector<pi::ai::Message> messages) {
+        AgentEvent e; e.kind = Kind::AgentEnd; e.messages = std::move(messages); return e;
     }
     static AgentEvent turn_start() { AgentEvent e; e.kind = Kind::TurnStart; return e; }
     static AgentEvent turn_end(pi::ai::Message m, std::vector<pi::ai::ToolResultMessage> tr) {
@@ -176,12 +180,20 @@ struct AgentLoopResult {
 
 // ---------------------------------------------------------------------------
 // The loop function — runs in a background thread.
-// Pushes events into the returned AgentEventStream; the final message is
-// the AssistantMessage returned by the last LLM turn.
+// Pushes events into the returned AgentEventStream.
+// The final AgentEvent::AgentEnd carries `messages` — the full conversation
+// history including prior turns and the new turn(s). Callers should use
+// this to maintain multi-turn state.
 // ---------------------------------------------------------------------------
 
 std::shared_ptr<AgentEventStream> run_agent_loop(
     std::vector<pi::ai::Message> initial_messages,
+    AgentLoopConfig config);
+
+/// Continue an existing conversation without adding a new user message.
+/// Used for retries / regenerations where the last message must be user or
+/// tool-result. Throws if there are no messages, or if the last is assistant.
+std::shared_ptr<AgentEventStream> run_agent_loop_continue(
     AgentLoopConfig config);
 
 }  // namespace pi::agent

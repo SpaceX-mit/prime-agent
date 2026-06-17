@@ -72,7 +72,7 @@ std::shared_ptr<AgentEventStream> run_agent_loop(
                 auto res = sub->result();
                 if (!res) {
                     out->push(AgentEvent::message_end(pi::ai::Message{pi::ai::AssistantMessage{}}));
-                    out->push(AgentEvent::agent_end({}));
+                    out->push(AgentEvent::agent_end(messages));
                     out->end();
                     return;
                 }
@@ -158,6 +158,39 @@ std::shared_ptr<AgentEventStream> run_agent_loop(
         out->end();
     }).detach();
 
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// agent_loop_continue: continue from existing state.messages.
+// Caller must have set up state.messages via prior run_agent_loop and
+// accumulated final messages. The last message must be user or toolResult.
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<AgentEventStream> run_agent_loop_continue(
+    AgentLoopConfig config) {
+
+    // The caller is responsible for passing in `messages` via config; here
+    // we expect config to have a pre-populated `messages` member. Since
+    // AgentLoopConfig doesn't carry messages yet, the caller (e.g.
+    // AgentSession) is responsible for holding them and re-injecting
+    // here. V1 simplification: we accept an empty initial_messages and
+    // require caller to push history onto a side channel before calling.
+    //
+    // For V1 interactive mode, the simplest correct pattern is to call
+    // run_agent_loop() with the full history as `initial_messages`, then
+    // (for next turn) reuse `event.messages` from agent_end. We don't
+    // actually need a separate _continue entry point — it's a V2 helper.
+
+    auto out = std::make_shared<AgentEventStream>();
+    // For now, signal that this entry point is not yet wired.
+    pi::ai::AssistantMessage m;
+    m.stop_reason = "error";
+    m.error_message = "run_agent_loop_continue: not yet implemented; use run_agent_loop with full history";
+    out->push(AgentEvent::agent_start());
+    out->push(AgentEvent::message_end(pi::ai::Message{m}));
+    out->push(AgentEvent::agent_end({}));
+    out->end();
     return out;
 }
 

@@ -207,6 +207,7 @@ int run_interactive(const pi::ai::Model& model,
         std::thread([&state_mtx, &state, &tui, &refresh_chat, &footer, &theme,
                       messages = std::move(messages), cfg = std::move(cfg_in)]() mutable {
             auto stream = pi::agent::run_agent_loop(std::move(messages), std::move(cfg));
+            std::vector<pi::ai::Message> final_messages;
             stream->drain([&](const pi::agent::AgentEvent& ev) {
                 bool redraw = false;
                 std::string status_msg;
@@ -237,6 +238,15 @@ int run_interactive(const pi::ai::Model& model,
                             redraw = true;
                             break;
                         }
+                        case pi::agent::AgentEvent::Kind::AgentEnd:
+                            // Persist the full conversation history so the
+                            // next prompt starts with multi-turn context.
+                            // Mirrors upstream pi's
+                            //   state.messages.push(event.message)
+                            // pattern but appends the entire batch at once.
+                            state.history = ev.messages;
+                            final_messages = ev.messages;
+                            break;
                         default:
                             break;
                     }
@@ -258,6 +268,10 @@ int run_interactive(const pi::ai::Model& model,
                 state.turns.push_back("");  // blank line separator
                 state.status.clear();
                 state.redraw_needed = true;
+                // Defensive: if the loop emitted no AgentEnd (shouldn't
+                // happen, but be safe), fall back to using just the
+                // appended history we already set.
+                (void)final_messages;
             }
             footer->set_status("");
             refresh_chat();

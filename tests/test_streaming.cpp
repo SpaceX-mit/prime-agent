@@ -285,3 +285,109 @@ TEST_CASE("stream_simple on background thread does not block caller (INC-002)") 
     CHECK(total_events > 0);
 }
 
+// ===========================================================================
+// Multi-turn conversation: agent_end carries full history, next turn
+// sees prior turns.
+// ===========================================================================
+
+TEST_CASE("AgentEnd event carries full conversation history (multi-turn)") {
+    // Drives agent_loop twice in sequence; verifies the second call sees
+    // messages from the first call. This is the multi-turn invariant that
+    // upstream pi maintains via state.messages.push(event.message).
+
+    // Local scripted provider (the file-level one is in an anonymous
+    // namespace and not visible here).
+    class LocalProvider : public Provider {
+    public:
+        LocalProvider(std::vector<std::string> chunks, int delay_ms)
+            : chunks_(std::move(chunks)), delay_ms_(delay_ms) {}
+        ApiKind api() const override { return ApiKind::OpenAICompletions; }
+        std::string name() const override { return "scripted-multi"; }
+        std::shared_ptr<EventStream> stream(
+            const Model&, const Context&, const StreamOptions&) override {
+            auto out = std::make_shared<EventStream>();
+            std::thread([out, chunks = chunks_, delay_ms = delay_ms_]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+                AssistantMessage m;
+                out->push(AssistantMessageEvent::start(m));
+                out->push(AssistantMessageEvent::text_start(0, m));
+                TextContent tc;
+                tc.text = chunks[0];
+                m.content.push_back(tc);
+                out->push(AssistantMessageEvent::text_delta(0, chunks[0], m));
+                out->push(AssistantMessageEvent::text_end(0, chunks[0], m));
+                m.stop_reason = "stop";
+                out->push(AssistantMessageEvent::done("stop", m));
+                out->end(std::move(m));
+            }).detach();
+            return out;
+        }
+    private:
+        std::vector<std::string> chunks_;
+        int delay_ms_;
+    };
+
+    static bool registered = false;
+    if (!registered) {
+        ProviderRegistry::instance().register_provider(
+            std::make_shared<LocalProvider>(
+                std::vector<std::string>{"hello"}, /*delay_ms=*/10));
+        registered = true;
+    }
+
+    Model m;
+    m.id = "multi-model";
+    m.provider = "scripted-multi";
+    m.api = ApiKind::OpenAICompletions;
+
+    pi::agent::AgentLoopConfig cfg;
+    cfg.model = m;
+    cfg.tools = {};
+    cfg.stream_opts.api_key = "fake";
+
+    // First turn: 1 user message → expect 1 assistant response.
+    std::vector<pi::ai::Message> history1;
+    {
+        pi::ai::UserMessage um;
+        um.content.push_back(TextContent{"first prompt"});
+        history1.push_back(um);
+    }
+    auto stream1 = pi::agent::run_agent_loop(history1, cfg);
+    std::vector<pi::ai::Message> captured;
+    stream1->drain([&](const pi::agent::AgentEvent& e) {
+        if (e.kind == pi::agent::AgentEvent::Kind::AgentEnd) {
+            captured = e.messages;
+        }
+    });
+
+    REQUIRE(captured.size() >= 2);  // 1 user + 1 assistant
+    CHECK(std::holds_alternative<pi::ai::UserMessage>(captured.front()));
+    CHECK(std::holds_alternative<pi::ai::AssistantMessage>(captured.back()));
+
+    // Second turn: append new user message, run again.
+    pi::ai::UserMessage um2;
+    um2.content.push_back(TextContent{"second prompt"});
+    captured.push_back(um2);
+
+    auto stream2 = pi::agent::run_agent_loop(captured, cfg);
+    std::vector<pi::ai::Message> final2_msgs;
+    stream2->drain([&](const pi::agent::AgentEvent& e) {
+        if (e.kind == pi::agent::AgentEvent::Kind::AgentEnd) {
+            final2_msgs = e.messages;
+        }
+    });
+
+    // After 2 turns we expect at least: 2 user + 2 assistant messages.
+    CHECK(final2_msgs.size() >= 4);
+
+    // First message is still the first user prompt (history preserved).
+    auto first = std::get<pi::ai::UserMessage>(final2_msgs.front());
+    REQUIRE(!first.content.empty());
+    CHECK(std::get<pi::ai::TextContent>(first.content[0]).text == "first prompt");
+
+    // The last user message is the second prompt.
+    auto last_user = std::get<pi::ai::UserMessage>(final2_msgs.at(final2_msgs.size() - 2));
+    REQUIRE(!last_user.content.empty());
+    CHECK(std::get<pi::ai::TextContent>(last_user.content[0]).text == "second prompt");
+}
+

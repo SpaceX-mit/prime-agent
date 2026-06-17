@@ -1,20 +1,30 @@
 // apps/pi/main.cpp
-// Phase 0-1 entry point. Supports:
-//   --help / -h         show usage
-//   --version / -V      show version
-//   --list-models       list built-in models
-//   -p <prompt>         one-shot stream to stdout (uses model from env or --model)
-//   --model <id>        specify model (e.g. "anthropic/claude-sonnet-4-5")
-//   --api-key <key>     override API key (default: env var)
-//   --json              emit JSON events instead of plain text (print mode)
+// Phase 0-2 entry point.
+// Supports:
+//   --help / -h, --version / -V, --list-models
+//   -p <prompt>             Print mode (single-shot, agent + tools)
+//   --model <id>            Model id
+//   --provider <name>       Provider override
+//   --api-key <key>         Override API key
+//   --max-tokens <n>
+//   --temperature <f>
+//   --json                  Emit JSON events (text deltas + tool events)
+//
+// Phase 2: -p routes through AgentLoop with bash/read/write/edit tools.
 
+#include "pi_agent/agent_loop.hpp"
 #include "pi_ai/models.hpp"
 #include "pi_ai/stream_simple.hpp"
 #include "pi_ai/types.hpp"
+#include "pi_coding/tools/bash_tool.hpp"
+#include "pi_coding/tools/edit_tool.hpp"
+#include "pi_coding/tools/read_tool.hpp"
+#include "pi_coding/tools/write_tool.hpp"
 #include "pi_core/ansi.hpp"
 #include "pi_core/env.hpp"
 #include "pi_core/json.hpp"
 #include "pi_core/log.hpp"
+#include "pi_core/path.hpp"
 #include "pi_core/strutil.hpp"
 
 #include <atomic>
@@ -33,9 +43,8 @@ namespace {
 const char* kUsage = R"(pi — prime-agent (C/C++ reimplementation)
 
 USAGE:
-  pi [options]                Interactive mode (not implemented yet)
-  pi -p "<prompt>"            One-shot prompt (print mode, streaming to stdout)
-  echo "..." | pi -p "-"      Read prompt from stdin
+  pi [options]                Interactive mode (not yet implemented)
+  pi -p "<prompt>"            One-shot prompt (print mode, agent + tools)
 
 OPTIONS:
   -h, --help                  Show this help
@@ -43,11 +52,11 @@ OPTIONS:
       --list-models           List all built-in models (json)
       --model <id>            Model id (e.g. anthropic/claude-sonnet-4-5)
       --provider <name>       Provider name (e.g. anthropic)
-      --api-key <key>         Override API key (default: env var)
+      --api-key <key>         Override API key
       --max-tokens <n>        Limit output tokens
       --temperature <f>       Sampling temperature
-  -p <text>                   Print mode (one-shot, streaming)
-      --json                  Print mode emits JSON events instead of plain text
+  -p <text>                   Print mode (agent loop with bash/read/write/edit)
+      --json                  Emit JSON events instead of plain text
 
 ENVIRONMENT:
   ANTHROPIC_API_KEY           Anthropic API key
@@ -57,7 +66,6 @@ EXAMPLES:
   pi -p "say exactly: ok"
   pi -p "what's 2+2" --model openai/gpt-4o-mini
   pi --list-models
-
 )";
 
 std::atomic<bool> g_interrupted{false};
@@ -96,71 +104,153 @@ std::string resolve_api_key(const std::string& provider) {
     return "";
 }
 
-int run_print_mode(const ai::Model& model, const std::string& prompt,
-                   const ai::SimpleStreamOptions& opts, bool as_json) {
-    ai::Context ctx;
-    ctx.messages.push_back(ai::UserMessage{});
-    std::get<ai::UserMessage>(ctx.messages.back()).content.push_back(ai::TextContent{prompt});
+std::string get_text_content(const pi::ai::AssistantMessage& m) {
+    std::string out;
+    for (auto& c : m.content) {
+        if (std::holds_alternative<pi::ai::TextContent>(c)) {
+            out += std::get<pi::ai::TextContent>(c).text;
+        }
+    }
+    return out;
+}
 
-    ai::AssistantMessage final_msg;
-    auto stream = ai::stream_simple(model, ctx, opts);
+int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
+                         const ai::SimpleStreamOptions& opts, bool as_json) {
+    // Build tools.
+    std::string cwd = core::path::current_working_dir().value_or(".");
+    std::vector<agent::ToolPtr> tools;
+    tools.push_back(std::make_shared<coding::tools::BashTool>());
+    tools.push_back(std::make_shared<coding::tools::ReadTool>(cwd));
+    tools.push_back(std::make_shared<coding::tools::WriteTool>(cwd));
+    tools.push_back(std::make_shared<coding::tools::EditTool>(cwd));
 
-    bool first_text = true;
-    auto on_event = [&](const ai::AssistantMessageEvent& ev) {
-        if (as_json) {
-            core::Json j;
-            j["type"] = ai::to_string(ev.kind);
-            j["model"] = model.id;
-            if (ev.kind == ai::AssistantMessageEvent::Kind::TextDelta) {
-                j["delta"] = ev.delta;
-            } else if (ev.kind == ai::AssistantMessageEvent::Kind::ToolCallEnd) {
-                j["toolCall"] = {
-                    {"id", ev.tool_call.id},
-                    {"name", ev.tool_call.name},
-                    {"arguments", ev.tool_call.arguments_json},
-                };
-            } else if (ev.kind == ai::AssistantMessageEvent::Kind::Done) {
-                j["stopReason"] = ev.reason;
-                j["usage"] = ev.partial.usage;
-            } else if (ev.kind == ai::AssistantMessageEvent::Kind::Error) {
-                j["error"] = ev.error_message;
+    // Build initial messages.
+    std::vector<ai::Message> messages;
+    {
+        ai::UserMessage um;
+        um.content.push_back(ai::TextContent{prompt});
+        messages.push_back(um);
+    }
+
+    // Run agent loop.
+    agent::AgentLoopConfig cfg;
+    cfg.model = model;
+    cfg.tools = std::move(tools);
+    cfg.stream_opts = opts;
+
+    auto stream = agent::run_agent_loop(std::move(messages), std::move(cfg));
+
+    std::string final_text;
+    ai::AssistantMessage last_assistant;
+    std::atomic<int> error_count{0};
+
+    auto on_event = [&](const agent::AgentEvent& ev) {
+        switch (ev.kind) {
+            case agent::AgentEvent::Kind::AgentStart:
+                if (as_json) std::cout << "{\"type\":\"agent_start\"}\n";
+                break;
+            case agent::AgentEvent::Kind::AgentEnd:
+                if (as_json) std::cout << "{\"type\":\"agent_end\"}\n";
+                break;
+            case agent::AgentEvent::Kind::TurnStart:
+                if (as_json) std::cout << "{\"type\":\"turn_start\"}\n";
+                break;
+            case agent::AgentEvent::Kind::TurnEnd:
+                if (as_json) std::cout << "{\"type\":\"turn_end\"}\n";
+                break;
+            case agent::AgentEvent::Kind::MessageStart:
+                if (as_json) std::cout << "{\"type\":\"message_start\"}\n";
+                break;
+            case agent::AgentEvent::Kind::MessageUpdate: {
+                auto& aev = ev.assistant_event;
+                if (as_json) {
+                    core::Json j;
+                    j["type"] = "message_update";
+                    j["event"] = ai::to_string(aev.kind);
+                    if (aev.kind == ai::AssistantMessageEvent::Kind::TextDelta) {
+                        j["delta"] = aev.delta;
+                    } else if (aev.kind == ai::AssistantMessageEvent::Kind::ToolCallEnd) {
+                        j["toolCall"] = {
+                            {"id", aev.tool_call.id},
+                            {"name", aev.tool_call.name},
+                        };
+                    }
+                    std::cout << j.dump() << "\n";
+                } else {
+                    if (aev.kind == ai::AssistantMessageEvent::Kind::TextDelta) {
+                        std::cout << aev.delta;
+                        std::cout.flush();
+                    } else if (aev.kind == ai::AssistantMessageEvent::Kind::ToolCallEnd) {
+                        std::cerr << "\n[tool: " << aev.tool_call.name << "]\n";
+                        std::cerr.flush();
+                    }
+                }
+                break;
             }
-            std::cout << j.dump() << "\n";
-            std::cout.flush();
-        } else {
-            if (ev.kind == ai::AssistantMessageEvent::Kind::TextDelta) {
-                if (first_text) first_text = false;
-                std::cout << ev.delta;
-                std::cout.flush();
-            } else if (ev.kind == ai::AssistantMessageEvent::Kind::Done) {
-                if (first_text) {}  // no text emitted
-                std::cout << "\n";
-            } else if (ev.kind == ai::AssistantMessageEvent::Kind::Error) {
-                std::cerr << "\n[error] " << ev.error_message << "\n";
-                std::cerr.flush();
+            case agent::AgentEvent::Kind::MessageEnd: {
+                if (as_json) {
+                    std::cout << "{\"type\":\"message_end\"}\n";
+                }
+                if (std::holds_alternative<ai::AssistantMessage>(ev.message)) {
+                    last_assistant = std::get<ai::AssistantMessage>(ev.message);
+                }
+                break;
             }
+            case agent::AgentEvent::Kind::ToolExecutionStart: {
+                if (as_json) {
+                    std::cout << "{\"type\":\"tool_execution_start\",\"tool\":\"" << ev.tool_name
+                              << "\",\"args\":" << ev.tool_args.dump() << "}\n";
+                } else {
+                    std::cerr << "→ " << ev.tool_name << "(" << ev.tool_args.dump() << ")\n";
+                    std::cerr.flush();
+                }
+                break;
+            }
+            case agent::AgentEvent::Kind::ToolExecutionEnd: {
+                if (as_json) {
+                    core::Json j;
+                    j["type"] = "tool_execution_end";
+                    j["tool"] = ev.tool_name;
+                    j["isError"] = ev.tool_is_error;
+                    j["details"] = ev.tool_result.details;
+                    j["content"] = core::Json::array();
+                    for (auto& c : ev.tool_result.content) {
+                        if (std::holds_alternative<ai::TextContent>(c)) {
+                            j["content"].push_back({{"type", "text"},
+                                                     {"text", std::get<ai::TextContent>(c).text}});
+                        }
+                    }
+                    std::cout << j.dump() << "\n";
+                } else {
+                    std::cerr << "← " << ev.tool_name
+                              << (ev.tool_is_error ? " [error]\n" : " [ok]\n");
+                    std::cerr.flush();
+                }
+                if (ev.tool_is_error) error_count++;
+                break;
+            }
+            default:
+                break;
         }
     };
 
-    auto res = stream->drain_to_completion(on_event);
-    if (!res) {
-        std::cerr << "[fatal] " << res.error().to_string() << "\n";
-        return 2;
-    }
-    final_msg = std::move(res.value());
+    stream->drain(on_event);
+
+    final_text = get_text_content(last_assistant);
 
     if (as_json) {
         core::Json j;
         j["type"] = "done";
-        j["stopReason"] = final_msg.stop_reason;
-        j["usage"] = final_msg.usage;
+        j["stopReason"] = last_assistant.stop_reason;
+        j["usage"] = last_assistant.usage;
         std::cout << j.dump() << "\n";
     }
 
-    if (final_msg.stop_reason == "error") {
-        std::cerr << "[error] " << final_msg.error_message.value_or("(no message)") << "\n";
+    if (!as_json && last_assistant.stop_reason == "error") {
+        std::cerr << "\n[error] " << last_assistant.error_message.value_or("(no message)") << "\n";
         return 3;
     }
+    if (g_interrupted) return 130;
     return 0;
 }
 
@@ -171,7 +261,6 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, on_signal);
     core::log::init(core::log::Level::Warn);
 
-    // First pass: collect options.
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
 
@@ -234,21 +323,19 @@ int main(int argc, char** argv) {
     }
 
     if (show_help) { std::cout << kUsage; return 0; }
-    if (show_version) { std::cout << "pi " << "0.1.0" << "\n"; return 0; }
+    if (show_version) { std::cout << "pi 0.1.0\n"; return 0; }
     if (list_models) { print_models_json(); return 0; }
     if (!has_prompt) {
         std::cerr << kUsage;
         return 1;
     }
 
-    // Read from stdin if prompt == "-"
     if (prompt == "-") {
         std::ostringstream ss;
         ss << std::cin.rdbuf();
         prompt = ss.str();
     }
 
-    // Resolve model.
     const ai::Model* model = nullptr;
     if (!model_id.empty()) {
         std::string key = model_id;
@@ -262,7 +349,6 @@ int main(int argc, char** argv) {
             return 2;
         }
     } else {
-        // Default: pick the first available based on env.
         if (auto ak = core::env::get("ANTHROPIC_API_KEY"); ak && !ak->empty()) {
             model = ai::find_model("anthropic/claude-sonnet-4-5");
         } else if (auto ok = core::env::get("OPENAI_API_KEY"); ok && !ok->empty()) {
@@ -273,11 +359,6 @@ int main(int argc, char** argv) {
                       << " or use --api-key.\n";
             return 2;
         }
-    }
-    if (!provider_override.empty() && model->provider != provider_override) {
-        std::cerr << "warn: --provider overrides model default (" << model->provider
-                  << " -> " << provider_override << ") but model stays as '"
-                  << model->id << "'\n";
     }
 
     ai::SimpleStreamOptions opts;
@@ -293,5 +374,5 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    return run_print_mode(*model, prompt, opts, as_json);
+    return run_agent_print_mode(*model, prompt, opts, as_json);
 }

@@ -1,6 +1,23 @@
-# libs/coding/CMakeLists.txt (placeholder for Phase 4)
-add_library(pi_coding INTERFACE)
-target_include_directories(pi_coding INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+# libs/coding/CMakeLists.txt
+add_library(pi_coding STATIC
+    src/tools/bash.cpp
+    src/tools/read.cpp
+    src/tools/write.cpp
+    src/tools/edit.cpp
 )
-target_link_libraries(pi_coding INTERFACE pi_core pi_ai)
+
+target_include_directories(pi_coding
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
+target_link_libraries(pi_coding
+    PUBLIC
+        pi_core
+        pi_ai
+        pi_agent
+)
+
+if(UNIX)
+    target_link_libraries(pi_coding PUBLIC pthread)
+endif()

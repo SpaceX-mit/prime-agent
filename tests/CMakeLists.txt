@@ -7,6 +7,8 @@ function(pi_add_test name)
             pi_core
             pi_http
             pi_ai
+            pi_agent
+            pi_coding
     )
     add_test(NAME ${name} COMMAND ${name})
     set_tests_properties(${name} PROPERTIES
@@ -19,3 +21,4 @@ pi_add_test(test_http)
 pi_add_test(test_sse)
 pi_add_test(test_anthropic_parser)
 pi_add_test(test_models)
+pi_add_test(test_tools)

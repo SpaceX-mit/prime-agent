@@ -5,6 +5,8 @@ target_link_libraries(pi
         pi_core
         pi_http
         pi_ai
+        pi_agent
+        pi_coding
 )
 set_target_properties(pi PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps/pi"

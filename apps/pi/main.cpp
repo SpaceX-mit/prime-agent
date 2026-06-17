@@ -14,6 +14,7 @@
 
 #include "pi_agent/agent_loop.hpp"
 #include "pi_ai/models.hpp"
+#include "pi_ai/provider.hpp"
 #include "pi_ai/stream_simple.hpp"
 #include "pi_ai/types.hpp"
 #include "pi_coding/auth_storage.hpp"
@@ -116,6 +117,8 @@ std::string resolve_api_key(const std::string& provider) {
         if (auto k = core::env::get("ANTHROPIC_API_KEY"); k && !k->empty()) return *k;
     } else if (provider == "openai") {
         if (auto k = core::env::get("OPENAI_API_KEY"); k && !k->empty()) return *k;
+    } else if (provider == "minimax") {
+        if (auto k = core::env::get("MINIMAX_API_KEY"); k && !k->empty()) return *k;
     }
 
     // auth.json
@@ -319,6 +322,10 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
     core::log::init(core::log::Level::Warn);
+
+    // Register all built-in LLM providers (Anthropic, OpenAI, Google, Mistral, MiniMax).
+    // Must happen before any stream_simple / find_model call.
+    ai::register_builtin_providers();
 
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
@@ -524,10 +531,12 @@ int main(int argc, char** argv) {
             model = ai::find_model("anthropic/claude-sonnet-4-5");
         } else if (auto ok = core::env::get("OPENAI_API_KEY"); ok && !ok->empty()) {
             model = ai::find_model("openai/gpt-4o-mini");
+        } else if (auto mk = core::env::get("MINIMAX_API_KEY"); mk && !mk->empty()) {
+            model = ai::find_model("minimax/MiniMax-Text-01");
         }
         if (!model) {
-            std::cerr << "error: no API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY,"
-                      << " or use --api-key.\n";
+            std::cerr << "error: no API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY,"
+                      << " MINIMAX_API_KEY, or use --api-key.\n";
             return 2;
         }
     }
@@ -539,7 +548,12 @@ int main(int argc, char** argv) {
     if (opts.api_key->empty()) {
         std::cerr << "error: no API key for provider '" << model->provider << "'.\n"
                   << "Set the appropriate environment variable, e.g.\n"
-                  << "  export " << (model->provider == "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY")
+                  << "  export " << (model->provider == "anthropic" ? "ANTHROPIC_API_KEY"
+                                      : model->provider == "openai" ? "OPENAI_API_KEY"
+                                      : model->provider == "minimax" ? "MINIMAX_API_KEY"
+                                      : model->provider == "google" ? "GOOGLE_API_KEY"
+                                      : model->provider == "mistral" ? "MISTRAL_API_KEY"
+                                                                       : "<PROVIDER>_API_KEY")
                   << "=...\n"
                   << "  or use --api-key.\n";
         return 2;

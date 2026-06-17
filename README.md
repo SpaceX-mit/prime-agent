@@ -24,6 +24,7 @@
 | **V2.6** | /compact slash command 真正工作 | ✅ |
 | **V2.7** | /login OAuth command 接入 Anthropic framework | ✅ |
 | **V2.8** | Multi-line Editor 组件（Ctrl-J 提交） | ✅ |
+| **V2.9** | MiniMax China Provider（4 models：Text-01 / VL-01 / abab-6.5s / abab-6.5） | ✅ |
 
 详见 [`pi-spec/240-Implementation-Plan.md`](pi-spec/240-Implementation-Plan.md)。
 
@@ -126,26 +127,39 @@ pi --session <id> --export session.html
 | `find` | glob 查找（`**` 展开为 `*`） |
 | `ls` | 目录列表（隐藏 / all 标志） |
 
-## 模型（12 个 from 4 providers）
+## 模型（16 个 from 5 providers）
 
 ```bash
 pi --list-models
 ```
 
-| Provider | Model | Context |
-|---|---|---|
-| Anthropic | claude-sonnet-4-5 | 200K |
-| Anthropic | claude-opus-4 | 200K |
-| Anthropic | claude-haiku-4 | 200K |
-| OpenAI | gpt-4o | 128K |
-| OpenAI | gpt-4o-mini | 128K |
-| OpenAI | o1 | 200K |
-| OpenAI | o3-mini | 200K |
-| Google | gemini-2.5-pro | 1M |
-| Google | gemini-2.5-flash | 1M |
-| Mistral | mistral-large-latest | 128K |
-| Mistral | mistral-small-latest | 128K |
-| Mistral | codestral-latest | 32K |
+| Provider | Model | Context | Notes |
+|---|---|---:|---|
+| Anthropic | claude-sonnet-4-5 | 200K | |
+| Anthropic | claude-opus-4 | 200K | |
+| Anthropic | claude-haiku-4 | 200K | |
+| OpenAI | gpt-4o | 128K | |
+| OpenAI | gpt-4o-mini | 128K | |
+| OpenAI | o1 | 200K | reasoning |
+| OpenAI | o3-mini | 200K | reasoning |
+| Google | gemini-2.5-pro | 1M | reasoning |
+| Google | gemini-2.5-flash | 1M | reasoning |
+| Mistral | mistral-large-latest | 128K | |
+| Mistral | mistral-small-latest | 128K | |
+| Mistral | codestral-latest | 32K | |
+| MiniMax | MiniMax-Text-01 | 1M | China |
+| MiniMax | MiniMax-VL-01 | 1M | vision, China |
+| MiniMax | abab-6.5s-chat | 245K | fast, China |
+| MiniMax | abab-6.5-chat | 245K | China |
+
+### 使用 MiniMax China
+
+```bash
+export MINIMAX_API_KEY=eyJhbGciOi...
+pi -p "你好" --model minimax/MiniMax-Text-01
+# 或不指定 model，让 pi 根据 MINIMAX_API_KEY 自动选择
+pi -p "你好"
+```
 
 ## 测试
 

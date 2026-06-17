@@ -60,4 +60,9 @@ private:
     std::unordered_map<ApiKind, std::string> api_to_name_;
 };
 
+/// Register all built-in providers (Anthropic, OpenAI, Google, Mistral, MiniMax).
+/// Call this once at startup to defeat linker dead-code elimination of the
+/// static AutoRegister instance.
+void register_builtin_providers();
+
 }  // namespace pi::ai

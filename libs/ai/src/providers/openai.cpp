@@ -120,7 +120,9 @@ std::shared_ptr<EventStream> OpenAICompletionsProvider::stream(
 
     auto out = std::make_shared<EventStream>();
     auto body = build_request_body(model, ctx, opts);
-    std::string url = "https://api.openai.com/v1/chat/completions";
+    // Use the model's base_url so other OpenAI-compatible providers (MiniMax,
+    // Mistral, custom OpenAI-compatible endpoints) can share this code.
+    std::string url = model.base_url + "/chat/completions";
     std::string api_key = opts.api_key.value_or("");
 
     std::thread([out, model, url = std::move(url), body = std::move(body),
@@ -239,23 +241,7 @@ std::shared_ptr<EventStream> OpenAICompletionsProvider::stream(
     return out;
 }
 
-std::shared_ptr<EventStream> OpenAIResponsesProvider::stream(
-    const Model& model,
-    const Context& ctx,
-    const StreamOptions& /*opts*/) {
-    // V1: not implemented — OpenAI Responses API is a newer protocol that
-    // differs from Chat Completions. Use the chat completions provider for now.
-    auto out = std::make_shared<EventStream>();
-    std::thread([out, model]() {
-        AssistantMessage m;
-        m.api = to_string(model.api);
-        m.provider = model.provider;
-        m.model = model.id;
-        m.stop_reason = "error";
-        m.error_message = "openai-responses: not yet implemented in V1";
-        out->end(std::move(m));
-    }).detach();
-    return out;
-}
+// OpenAIResponsesProvider removed in V2 to avoid shadowing OpenAICompletionsProvider.
+// Re-add when the Responses API is implemented.
 
 }  // namespace pi::ai::providers

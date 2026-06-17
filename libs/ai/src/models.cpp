@@ -172,12 +172,68 @@ const std::vector<Model> kMistral = {
     },
 };
 
+const std::vector<Model> kMiniMax = {
+    {
+        "MiniMax-Text-01",
+        "MiniMax Text-01",
+        ApiKind::OpenAICompletions,
+        "minimax",
+        "https://api.minimaxi.chat/v1",
+        false,
+        {"text"},
+        {1.0, 1.0, 0, 0},
+        1'000'000,
+        8192,
+        {},
+    },
+    {
+        "MiniMax-VL-01",
+        "MiniMax VL-01 (Vision)",
+        ApiKind::OpenAICompletions,
+        "minimax",
+        "https://api.minimaxi.chat/v1",
+        false,
+        {"text", "image"},
+        {1.0, 1.0, 0, 0},
+        1'000'000,
+        8192,
+        {},
+    },
+    {
+        "abab-6.5s-chat",
+        "MiniMax abab-6.5s (fast)",
+        ApiKind::OpenAICompletions,
+        "minimax",
+        "https://api.minimaxi.chat/v1",
+        false,
+        {"text"},
+        {1.0, 1.0, 0, 0},
+        245'760,
+        8192,
+        {},
+    },
+    {
+        "abab-6.5-chat",
+        "MiniMax abab-6.5",
+        ApiKind::OpenAICompletions,
+        "minimax",
+        "https://api.minimaxi.chat/v1",
+        false,
+        {"text"},
+        {1.0, 1.0, 0, 0},
+        245'760,
+        8192,
+        {},
+    },
+};
+
 const std::vector<Model> kAll = [] {
     std::vector<Model> v;
     v.insert(v.end(), kAnthropic.begin(), kAnthropic.end());
     v.insert(v.end(), kOpenAI.begin(), kOpenAI.end());
     v.insert(v.end(), kGoogle.begin(), kGoogle.end());
     v.insert(v.end(), kMistral.begin(), kMistral.end());
+    v.insert(v.end(), kMiniMax.begin(), kMiniMax.end());
     return v;
 }();
 }
@@ -187,6 +243,7 @@ const std::vector<Model>& anthropic_models() { return kAnthropic; }
 const std::vector<Model>& openai_models() { return kOpenAI; }
 const std::vector<Model>& google_models() { return kGoogle; }
 const std::vector<Model>& mistral_models() { return kMistral; }
+const std::vector<Model>& minimax_models() { return kMiniMax; }
 
 const Model* find_model(const std::string& key) {
     // Accept "<provider>/<id>" or just "<id>" (search all).

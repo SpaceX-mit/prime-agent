@@ -16,15 +16,7 @@ public:
         const StreamOptions& opts) override;
 };
 
-class OpenAIResponsesProvider : public Provider {
-public:
-    ApiKind api() const override { return ApiKind::OpenAIResponses; }
-    std::string name() const override { return "openai"; }
-
-    std::shared_ptr<EventStream> stream(
-        const Model& model,
-        const Context& ctx,
-        const StreamOptions& opts) override;
-};
+// OpenAIResponsesProvider was a V2 placeholder, removed to avoid shadowing
+// OpenAICompletionsProvider in the registry. Re-add when implemented.
 
 }  // namespace pi::ai::providers

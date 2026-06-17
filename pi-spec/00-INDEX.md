@@ -17,6 +17,11 @@
 | 70 | 架构 | [Architecture](./70-Architecture.md) | 模块级别架构图（9 张 Mermaid 图） |
 | 80 | 架构 | [Sequences](./80-Sequences.md) | 模块间时序图（10 个核心流程） |
 | 90 | 接口 | [Interfaces](./90-Interfaces.md) | 跨模块关键接口的完整 TS 签名 |
+| 100 | 子系统 | [Subsystem-Index](./100-Subsystem-Index.md) | 4 子系统功能梳理索引 |
+| 110 | 子系统 | [Subsystem-pi-ai](./110-Subsystem-pi-ai.md) | `@earendil-works/pi-ai` 功能分组 |
+| 120 | 子系统 | [Subsystem-pi-agent-core](./120-Subsystem-pi-agent-core.md) | `@earendil-works/pi-agent-core` 功能分组 |
+| 130 | 子系统 | [Subsystem-pi-tui](./130-Subsystem-pi-tui.md) | `@earendil-works/pi-tui` 功能分组 |
+| 140 | 子系统 | [Subsystem-pi-coding-agent](./140-Subsystem-pi-coding-agent.md) | `@earendil-works/pi-coding-agent` 功能分组 |
 
 ## 仓库一句话定义
 

@@ -25,6 +25,12 @@ struct Theme {
     std::string input_fg;
     std::string selection_bg;
     std::string selection_fg;
+    // Phase-specific tokens (mirrors upstream pi's dark theme buckets).
+    std::string thinking;       // reasoning stream — muted violet
+    std::string tool_pending;   // tool call announced, not yet finished
+    std::string tool_ok;        // tool result success
+    std::string tool_err;       // tool result error
+    std::string user_label;     // "›" prefix on user prompt (was previously inline accent)
     int thinking_dots_max = 3;
 
     static Theme dark();      // default

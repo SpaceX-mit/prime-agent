@@ -8,6 +8,7 @@
 #include "pi_tui/components/text.hpp"
 #include "pi_tui/terminal.hpp"
 #include "pi_tui/theme.hpp"
+#include "pi_tui/think_filter.hpp"
 
 #include <string>
 #include <vector>
@@ -96,4 +97,50 @@ TEST_CASE("Footer renders with mode and model") {
     REQUIRE(lines.size() == 1);
     CHECK(lines[0].find("interactive") != std::string::npos);
     CHECK(lines[0].find("claude-sonnet-4-5") != std::string::npos);
+}
+
+TEST_CASE("ThinkFilter strips tags in single delta") {
+    ThinkFilter f;
+    std::string out;
+    f.feed("<think>reasoning</think>answer", "[T]", "[/T]", out);
+    CHECK(out == "[T]reasoning[/T]answer");
+    CHECK(!f.in_think);
+    CHECK(f.buf.empty());
+}
+
+TEST_CASE("ThinkFilter handles tag split across deltas") {
+    ThinkFilter f;
+    std::string out;
+    // Open tag arrives in three pieces, then content + close tag spread.
+    f.feed("hi <th", "[T]", "[/T]", out);
+    f.feed("ink>part1", "[T]", "[/T]", out);
+    f.feed(" part2</thi", "[T]", "[/T]", out);
+    f.feed("nk>final", "[T]", "[/T]", out);
+    CHECK(out == "hi [T]part1 part2[/T]final");
+    CHECK(!f.in_think);
+}
+
+TEST_CASE("ThinkFilter passes plain text untouched") {
+    ThinkFilter f;
+    std::string out;
+    f.feed("just text", "[T]", "[/T]", out);
+    CHECK(out == "just text");
+    CHECK(f.buf.empty());
+}
+
+TEST_CASE("ThinkFilter handles back-to-back think blocks") {
+    ThinkFilter f;
+    std::string out;
+    f.feed("<think>a</think>mid<think>b</think>end", "<", ">", out);
+    CHECK(out == "<a>mid<b>end");
+}
+
+TEST_CASE("ThinkFilter does not flush trailing fragment that could grow into a tag") {
+    ThinkFilter f;
+    std::string out;
+    f.feed("done<thi", "[T]", "[/T]", out);
+    CHECK(out == "done");           // "<thi" held, may still become "<think>"
+    CHECK(!f.buf.empty());
+    f.feed("ng>", "[T]", "[/T]", out);
+    CHECK(out == "done<thing>");   // resolved as plain text, not a think tag
 }

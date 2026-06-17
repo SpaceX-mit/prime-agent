@@ -22,6 +22,11 @@ Theme Theme::dark() {
     t.input_fg    = "\x1b[38;5;252m";
     t.selection_bg = "\x1b[48;5;60m";
     t.selection_fg = "\x1b[38;5;231m";
+    t.thinking     = "\x1b[3;38;5;139;48;5;236m";   // italic violet on dark gray bg
+    t.tool_pending = "\x1b[38;5;221m";       // yellow
+    t.tool_ok      = "\x1b[38;5;114m";       // green
+    t.tool_err     = "\x1b[38;5;203m";       // red
+    t.user_label   = "\x1b[1;38;5;110m";     // bold cyan-teal
     return t;
 }
 
@@ -44,6 +49,11 @@ Theme Theme::light() {
     t.input_fg    = "\x1b[38;5;236m";
     t.selection_bg = "\x1b[48;5;153m";
     t.selection_fg = "\x1b[38;5;236m";
+    t.thinking     = "\x1b[3;38;5;97;48;5;254m";    // italic violet on light gray
+    t.tool_pending = "\x1b[38;5;130m";
+    t.tool_ok      = "\x1b[38;5;28m";
+    t.tool_err     = "\x1b[38;5;160m";
+    t.user_label   = "\x1b[1;38;5;24m";
     return t;
 }
 

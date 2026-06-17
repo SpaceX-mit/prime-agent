@@ -23,6 +23,7 @@
 #include "pi_tui/components/text.hpp"
 #include "pi_tui/terminal.hpp"
 #include "pi_tui/theme.hpp"
+#include "pi_tui/think_filter.hpp"
 #include "pi_tui/tui.hpp"
 
 #include <atomic>
@@ -43,7 +44,15 @@ struct ChatState {
     std::vector<std::string> turns;  // each turn is text+markdown lines
     std::string current_text;
     bool streaming = false;
+    // Filter for inline <think>...</think> tags emitted by reasoning models
+    // (MiniMax, DeepSeek). Reset on every new agent run.
+    ThinkFilter think;
     std::string status;
+    // Scroll viewport: how many lines from the *bottom* of the full chat
+    // we are currently anchored above. 0 = stuck to bottom (auto-follow).
+    // Positive = user has scrolled up by that many lines.
+    int scroll_back = 0;
+    bool follow = true;       // auto-stick to bottom while streaming
     std::vector<pi::ai::Message> history;     // full conversation (for /compact, /tree)
     pi::coding::SessionManager* session = nullptr;
     std::string model_id;
@@ -81,7 +90,8 @@ std::vector<std::string> render_chat(const ChatState& s, const Theme& t, int wid
 
 int run_interactive(const pi::ai::Model& model,
                     pi::ai::SimpleStreamOptions opts,
-                    std::string cwd) {
+                    std::string cwd,
+                    std::string resume_path) {
 
     Terminal term;
     if (!Terminal::is_tty()) {
@@ -110,19 +120,31 @@ int run_interactive(const pi::ai::Model& model,
 
     ChatState state;
 
-    // Session persistence: create a new session file under the default
-    // sessions directory. Each user message, assistant message, tool
-    // result, and compaction event is appended as a JSONL entry. This
-    // mirrors upstream pi's interactive-mode session behavior.
-    std::string session_path = coding::SessionManager::default_dir() + "/"
-                              + coding::SessionManager::new_session_id() + ".jsonl";
-    {
+    // Session persistence: either resume an existing JSONL session (replay
+    // its messages into history + transcript) or create a fresh one. In
+    // both cases, new entries are appended to the same file so the next
+    // resume sees the full continued conversation.
+    std::string session_path;
+    std::vector<pi::ai::Message> resumed_messages;
+    if (!resume_path.empty()) {
+        session_path = resume_path;
+        coding::SessionManager sm(session_path);
+        auto hdr = sm.read_header();
+        if (!hdr) {
+            std::cerr << "error: cannot read session header at " << session_path << "\n";
+            return 2;
+        }
+        auto entries = sm.read_entries();
+        auto ctx = coding::build_session_context(*hdr, entries, false);
+        resumed_messages = std::move(ctx.messages);
+        state.session = new coding::SessionManager(session_path);
+    } else {
+        session_path = coding::SessionManager::default_dir() + "/"
+                      + coding::SessionManager::new_session_id() + ".jsonl";
         coding::SessionManager sm(session_path);
         coding::SessionHeader hdr;
         hdr.id = sm.path().substr(sm.path().find_last_of('/') + 1,
-                                   sm.path().size() - sm.path().find_last_of('/') - 6);
-        hdr.timestamp = "2026-06-17T00:00:00Z";  // overwritten below
-        // Use real timestamp.
+                                   sm.path().size() - sm.path().find_last_of('/') - 6 - 1);
         std::time_t t = std::time(nullptr);
         std::tm tm{};
         gmtime_r(&t, &tm);
@@ -181,13 +203,16 @@ int run_interactive(const pi::ai::Model& model,
         bool streaming;
         std::string current_text;
         std::vector<std::string> turns;
+        int scroll_back;
+        bool follow;
         {
             std::lock_guard<std::mutex> g(state_mtx);
             turns = state.turns;
             streaming = state.streaming;
             current_text = state.current_text;
+            scroll_back = state.scroll_back;
+            follow = state.follow;
         }
-        // Simulate render_chat() using snapshot.
         for (auto& turn : turns) {
             std::istringstream iss(turn);
             std::string line;
@@ -203,10 +228,35 @@ int run_interactive(const pi::ai::Model& model,
                 lines.push_back(theme.accent + line + "\x1b[0m");
             }
         }
+        // Viewport: terminal rows minus 2 (input + footer).
+        auto sz = term.size();
+        int rows = sz.first;
+        int chat_rows = std::max(1, rows - 2);
+        int total = static_cast<int>(lines.size());
+        int start = 0;
+        if (total > chat_rows) {
+            if (follow) {
+                start = total - chat_rows;
+            } else {
+                int max_back = total - chat_rows;
+                int back = std::min(scroll_back, max_back);
+                start = max_back - back;
+            }
+        }
+        int end = std::min(total, start + chat_rows);
+
         std::string joined;
-        for (auto& l : lines) {
-            joined += l;
+        for (int i = start; i < end; ++i) {
+            joined += lines[i];
             joined += '\n';
+        }
+        // Pad with blank lines so input + footer stay anchored at the bottom
+        // even when chat is short.
+        for (int i = end - start; i < chat_rows; ++i) joined += '\n';
+        // Scroll indicator if not at bottom.
+        if (!follow && total > chat_rows) {
+            joined += theme.dim;
+            joined += "  ↑ scrolled — End to follow\x1b[0m\n";
         }
         chat_text->set_text(joined);
     };
@@ -231,6 +281,10 @@ int run_interactive(const pi::ai::Model& model,
           << "  /help              Show this help\n"
           << "  /model <id>        Switch model (e.g. /model openai/gpt-4o-mini)\n"
           << "  /new               Start a fresh conversation\n"
+          << "  /sessions          List saved sessions (id · timestamp · #msgs · cwd)\n"
+          << "  /resume <id>       Restart pi resuming the given session id (prefix ok)\n"
+          << "  /continue          Restart pi resuming the most recent session\n"
+          << "  /history           Dump current state.history (diagnostic)\n"
           << "\x1b[0m";
         std::lock_guard<std::mutex> g(state_mtx);
         state.turns.push_back(o.str());
@@ -238,6 +292,45 @@ int run_interactive(const pi::ai::Model& model,
     };
 
     show_welcome();
+
+    // Replay resumed messages into transcript + history so /compact, the
+    // next prompt, and on-screen scrollback all see prior context.
+    if (!resumed_messages.empty()) {
+        std::lock_guard<std::mutex> g(state_mtx);
+        state.history = resumed_messages;
+        for (auto& m : resumed_messages) {
+            std::ostringstream o;
+            std::visit([&](auto& v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, pi::ai::UserMessage>) {
+                    o << theme.user_label << "› " << theme.primary;
+                    for (auto& c : v.content) {
+                        if (std::holds_alternative<pi::ai::TextContent>(c))
+                            o << std::get<pi::ai::TextContent>(c).text;
+                    }
+                    o << "\x1b[0m\n";
+                } else if constexpr (std::is_same_v<T, pi::ai::AssistantMessage>) {
+                    for (auto& c : v.content) {
+                        if (std::holds_alternative<pi::ai::TextContent>(c))
+                            o << theme.primary << std::get<pi::ai::TextContent>(c).text << "\x1b[0m";
+                        else if (std::holds_alternative<pi::ai::ToolCall>(c))
+                            o << theme.dim << "[tool: "
+                              << std::get<pi::ai::ToolCall>(c).name << "]\x1b[0m";
+                    }
+                    o << "\n";
+                } else {
+                    o << theme.dim << "← " << v.tool_name
+                      << (v.is_error ? " [error]" : " [ok]") << "\x1b[0m\n";
+                }
+            }, m);
+            if (!o.str().empty()) state.turns.push_back(o.str());
+        }
+        std::ostringstream o;
+        o << theme.dim << "(resumed " << resumed_messages.size()
+          << " messages from " << session_path << ")\n\x1b[0m";
+        state.turns.push_back(o.str());
+        state.redraw_needed = true;
+    }
     refresh_chat();
     tui.render();
 
@@ -256,6 +349,7 @@ int run_interactive(const pi::ai::Model& model,
             std::lock_guard<std::mutex> g(state_mtx);
             state.streaming = true;
             state.current_text.clear();
+            state.think = ThinkFilter{};
             state.status = "thinking…";
             state.abort = abort_signal;
             state.redraw_needed = true;
@@ -278,12 +372,23 @@ int run_interactive(const pi::ai::Model& model,
                         case pi::agent::AgentEvent::Kind::MessageUpdate: {
                             auto& aev = ev.assistant_event;
                             if (aev.kind == pi::ai::AssistantMessageEvent::Kind::TextDelta) {
-                                state.current_text += aev.delta;
-                                state.status = "streaming…";
+                                // Wrap reasoning blocks with a labeled prefix so it
+                                // visually reads as a distinct region (pi's pattern:
+                                // italic + dedicated color + spacer above/below).
+                                std::string enter = std::string("\n") + theme.thinking
+                                    + "▎ reasoning ";
+                                std::string leave = "\x1b[0m\n";
+                                state.think.feed(aev.delta, enter, leave, state.current_text);
+                                state.status = state.think.in_think ? "thinking…" : "streaming…";
+                                redraw = true;
+                            } else if (aev.kind == pi::ai::AssistantMessageEvent::Kind::ThinkingDelta) {
+                                state.current_text += theme.thinking + aev.delta + "\x1b[0m";
+                                state.status = "thinking…";
                                 redraw = true;
                             } else if (aev.kind == pi::ai::AssistantMessageEvent::Kind::ToolCallEnd) {
                                 std::ostringstream o;
-                                o << "\n" << theme.dim << "[tool: " << aev.tool_call.name << "]\x1b[0m\n";
+                                o << "\n" << theme.tool_pending << "⏵ "
+                                  << aev.tool_call.name << "\x1b[0m\n";
                                 state.current_text += o.str();
                                 redraw = true;
                             } else if (aev.kind == pi::ai::AssistantMessageEvent::Kind::Done) {
@@ -313,7 +418,12 @@ int run_interactive(const pi::ai::Model& model,
                                         final_text += std::get<pi::ai::TextContent>(c).text;
                                     }
                                 }
-                                if (!final_text.empty()) {
+                                // INC-006 fix appended final_text always; that
+                                // double-printed when TextDelta events already
+                                // streamed it. Only fall back to MessageEnd's
+                                // final_text when the stream produced nothing
+                                // (provider sent no deltas, or only a final).
+                                if (!final_text.empty() && state.current_text.empty()) {
                                     state.current_text += final_text;
                                 }
                                 // Show error / abort messages in red.
@@ -328,16 +438,62 @@ int run_interactive(const pi::ai::Model& model,
                                     status_msg = am.stop_reason;
                                 }
                                 redraw = true;  // surface final text / error
+                                // Usage → footer status (e.g. "in 1234 / out 567 tok").
+                                if (am.usage.is_object()) {
+                                    int in_tok = am.usage.value("inputTokens",
+                                                                am.usage.value("input_tokens", 0));
+                                    int out_tok = am.usage.value("outputTokens",
+                                                                 am.usage.value("output_tokens", 0));
+                                    if (in_tok || out_tok) {
+                                        std::ostringstream u;
+                                        u << "in " << in_tok << " · out " << out_tok << " tok";
+                                        status_msg = u.str();
+                                    }
+                                }
                             }
                             // Persist every finalized message (assistant or
                             // tool result) to the session JSONL.
                             append_message_entry_fn(ev.message);
                             break;
                         }
+                        case pi::agent::AgentEvent::Kind::ToolExecutionStart: {
+                            std::string preview;
+                            if (ev.tool_args.is_object()) {
+                                if (ev.tool_args.contains("command"))
+                                    preview = ev.tool_args["command"].get<std::string>();
+                                else if (ev.tool_args.contains("path"))
+                                    preview = ev.tool_args["path"].get<std::string>();
+                                else if (ev.tool_args.contains("pattern"))
+                                    preview = ev.tool_args["pattern"].get<std::string>();
+                                else
+                                    preview = ev.tool_args.dump();
+                            }
+                            if (preview.size() > 80) preview = preview.substr(0, 77) + "…";
+                            std::ostringstream o;
+                            o << theme.tool_pending << "  ↪ " << ev.tool_name;
+                            if (!preview.empty()) o << " (" << preview << ")";
+                            o << "\x1b[0m\n";
+                            state.current_text += o.str();
+                            redraw = true;
+                            break;
+                        }
                         case pi::agent::AgentEvent::Kind::ToolExecutionEnd: {
                             std::ostringstream o;
-                            o << theme.dim << "← " << ev.tool_name
-                              << (ev.tool_is_error ? " [error]\n" : " [ok]\n") << "\x1b[0m";
+                            const std::string& c = ev.tool_is_error ? theme.tool_err : theme.tool_ok;
+                            const char* sym = ev.tool_is_error ? "✗" : "✓";
+                            std::string first;
+                            for (auto& cc : ev.tool_result.content) {
+                                if (std::holds_alternative<pi::ai::TextContent>(cc)) {
+                                    const auto& t = std::get<pi::ai::TextContent>(cc).text;
+                                    auto nl = t.find('\n');
+                                    first = (nl == std::string::npos) ? t : t.substr(0, nl);
+                                    break;
+                                }
+                            }
+                            if (first.size() > 100) first = first.substr(0, 97) + "…";
+                            o << c << "  " << sym << " " << ev.tool_name;
+                            if (!first.empty()) o << theme.dim << "  " << first;
+                            o << "\x1b[0m\n";
                             state.current_text += o.str();
                             redraw = true;
                             break;
@@ -378,7 +534,39 @@ int run_interactive(const pi::ai::Model& model,
     };
 
     // Main TUI loop.
+    auto stream_started = std::chrono::steady_clock::now();
+    int spin_tick = 0;
+    bool last_streaming = false;
     while (!tui.should_quit()) {
+        // Liveness heartbeat: while streaming, refresh the footer every
+        // ~250ms with a spinner + elapsed seconds so the user knows the
+        // agent is alive even when the model hasn't sent a delta yet
+        // (HTTP first-byte latency, long bash tools).
+        bool is_streaming;
+        {
+            std::lock_guard<std::mutex> g(state_mtx);
+            is_streaming = state.streaming;
+        }
+        if (is_streaming) {
+            if (!last_streaming) {
+                stream_started = std::chrono::steady_clock::now();
+                last_streaming = true;
+            }
+            if (spin_tick % 5 == 0) {
+                static const char* kFrames[] = {"⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"};
+                int sec = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - stream_started).count();
+                std::ostringstream u;
+                u << kFrames[(spin_tick / 5) % 10] << "  " << sec << "s";
+                footer->set_status(u.str());
+                tui.render();
+            }
+            spin_tick++;
+        } else {
+            last_streaming = false;
+            spin_tick = 0;
+        }
+
         // Decide whether to redraw (cheap, just a bool check).
         bool need_redraw = false;
         {
@@ -398,6 +586,15 @@ int run_interactive(const pi::ai::Model& model,
         if (!k) continue;
 
         if (k->kind == pi::tui::KeyEvent::Kind::CtrlC) {
+            // Two-press semantics: first Ctrl-C aborts the in-flight agent
+            // run; a second Ctrl-C within 2s force-quits even if the agent
+            // is still winding down (e.g. waiting on a slow socket read).
+            static auto last_ctrlc = std::chrono::steady_clock::time_point{};
+            auto now = std::chrono::steady_clock::now();
+            bool double_press = last_ctrlc.time_since_epoch().count() != 0 &&
+                std::chrono::duration_cast<std::chrono::seconds>(now - last_ctrlc).count() < 2;
+            last_ctrlc = now;
+
             bool was_streaming = false;
             {
                 std::lock_guard<std::mutex> g(state_mtx);
@@ -407,12 +604,37 @@ int run_interactive(const pi::ai::Model& model,
                     if (mutable_abort) mutable_abort->signal();
                 }
             }
-            if (!was_streaming) {
-                // Nothing to cancel; treat as quit.
+            if (!was_streaming || double_press) {
                 tui.quit();
                 break;
             }
-            // Otherwise let the agent thread observe the abort and wind down.
+            // First Ctrl-C while streaming: signal abort, keep TUI alive
+            // so the user sees the wind-down (and can hit Ctrl-C again
+            // if the wind-down hangs on a stuck socket read).
+            footer->set_status("aborting (Ctrl-C again to force quit)…");
+            tui.render();
+            continue;
+        }
+
+        // Scrolling controls. Captured here so they don't reach the input
+        // (which would treat PgUp/PgDn as garbage characters).
+        if (k->kind == pi::tui::KeyEvent::Kind::PageUp ||
+            k->kind == pi::tui::KeyEvent::Kind::PageDown ||
+            k->kind == pi::tui::KeyEvent::Kind::End) {
+            auto sz = term.size();
+            int page = std::max(1, sz.first - 2 - 1);
+            std::lock_guard<std::mutex> g(state_mtx);
+            if (k->kind == pi::tui::KeyEvent::Kind::PageUp) {
+                state.follow = false;
+                state.scroll_back += page;
+            } else if (k->kind == pi::tui::KeyEvent::Kind::PageDown) {
+                state.scroll_back = std::max(0, state.scroll_back - page);
+                if (state.scroll_back == 0) state.follow = true;
+            } else {  // End
+                state.follow = true;
+                state.scroll_back = 0;
+            }
+            state.redraw_needed = true;
             continue;
         }
 
@@ -536,6 +758,151 @@ int run_interactive(const pi::ai::Model& model,
                     tui.render();
                     continue;
                 }
+                if (cmd == "/history") {
+                    std::vector<pi::ai::Message> hist_copy;
+                    {
+                        std::lock_guard<std::mutex> g(state_mtx);
+                        hist_copy = state.history;
+                    }
+                    std::ostringstream o;
+                    o << theme.dim << "[history: " << hist_copy.size() << " messages]\n";
+                    for (size_t i = 0; i < hist_copy.size(); ++i) {
+                        std::visit([&](auto& v) {
+                            using T = std::decay_t<decltype(v)>;
+                            o << "  #" << i << " ";
+                            if constexpr (std::is_same_v<T, pi::ai::UserMessage>) {
+                                o << "user: ";
+                                for (auto& c : v.content)
+                                    if (std::holds_alternative<pi::ai::TextContent>(c))
+                                        o << std::get<pi::ai::TextContent>(c).text.substr(0, 80);
+                            } else if constexpr (std::is_same_v<T, pi::ai::AssistantMessage>) {
+                                o << "asst[" << v.stop_reason << "]: ";
+                                for (auto& c : v.content) {
+                                    if (std::holds_alternative<pi::ai::TextContent>(c))
+                                        o << std::get<pi::ai::TextContent>(c).text.substr(0, 60);
+                                    else if (std::holds_alternative<pi::ai::ToolCall>(c))
+                                        o << "<tool:" << std::get<pi::ai::ToolCall>(c).name << ">";
+                                }
+                            } else {
+                                o << "tool[" << v.tool_name << (v.is_error ? " err" : " ok") << "]";
+                            }
+                            o << "\n";
+                        }, hist_copy[i]);
+                    }
+                    o << "\x1b[0m";
+                    std::lock_guard<std::mutex> g(state_mtx);
+                    state.turns.push_back(o.str());
+                    state.redraw_needed = true;
+                    continue;
+                }
+                if (cmd == "/sessions") {
+                    auto all = coding::SessionManager::list_all();
+                    std::lock_guard<std::mutex> g(state_mtx);
+                    if (all.empty()) {
+                        state.turns.push_back(theme.dim + "(no saved sessions)\n\x1b[0m");
+                    } else {
+                        std::ostringstream o;
+                        o << theme.dim;
+                        size_t n = std::min<size_t>(all.size(), 20);
+                        for (size_t i = 0; i < n; ++i) {
+                            auto& s = all[i];
+                            o << s.id.substr(0, 12) << "  " << s.timestamp
+                              << "  " << s.message_count << " msgs  " << s.cwd << "\n";
+                        }
+                        if (all.size() > n) o << "(" << (all.size() - n) << " more…)\n";
+                        o << "\x1b[0m";
+                        state.turns.push_back(o.str());
+                    }
+                    state.redraw_needed = true;
+                    continue;
+                }
+                if (cmd == "/continue" || cmd.rfind("/resume", 0) == 0) {
+                    std::string target;
+                    if (cmd == "/continue") {
+                        auto all = coding::SessionManager::list_all();
+                        if (all.empty()) {
+                            std::lock_guard<std::mutex> g(state_mtx);
+                            state.turns.push_back(theme.error + "(no saved sessions)\n\x1b[0m");
+                            state.redraw_needed = true;
+                            continue;
+                        }
+                        target = all.front().path;
+                    } else {
+                        std::string arg = cmd.size() > 7 ? cmd.substr(7) : "";
+                        arg = std::string(pi::core::str::trim(arg));
+                        if (arg.empty()) {
+                            std::lock_guard<std::mutex> g(state_mtx);
+                            state.turns.push_back(theme.error + "Usage: /resume <session-id-prefix>\n\x1b[0m");
+                            state.redraw_needed = true;
+                            continue;
+                        }
+                        target = coding::SessionManager::resolve_id_prefix(arg);
+                        if (target.empty()) {
+                            std::lock_guard<std::mutex> g(state_mtx);
+                            state.turns.push_back(theme.error +
+                                "(no unique session matches '" + arg + "')\n\x1b[0m");
+                            state.redraw_needed = true;
+                            continue;
+                        }
+                    }
+                    // In-place resume: drop current state, load target session,
+                    // continue in same process. No re-exec.
+                    coding::SessionManager sm(target);
+                    auto hdr = sm.read_header();
+                    if (!hdr) {
+                        std::lock_guard<std::mutex> g(state_mtx);
+                        state.turns.push_back(theme.error +
+                            "(failed to read header of " + target + ")\n\x1b[0m");
+                        state.redraw_needed = true;
+                        continue;
+                    }
+                    auto entries = sm.read_entries();
+                    auto ctx = coding::build_session_context(*hdr, entries, false);
+                    {
+                        std::lock_guard<std::mutex> g(state_mtx);
+                        delete state.session;
+                        state.session = new coding::SessionManager(target);
+                        state.history = ctx.messages;
+                        state.turns.clear();
+                        state.current_text.clear();
+                        // Replay messages into transcript.
+                        for (auto& m : ctx.messages) {
+                            std::ostringstream o;
+                            std::visit([&](auto& v) {
+                                using T = std::decay_t<decltype(v)>;
+                                if constexpr (std::is_same_v<T, pi::ai::UserMessage>) {
+                                    o << theme.user_label << "› " << theme.primary;
+                                    for (auto& c : v.content) {
+                                        if (std::holds_alternative<pi::ai::TextContent>(c))
+                                            o << std::get<pi::ai::TextContent>(c).text;
+                                    }
+                                    o << "\x1b[0m\n";
+                                } else if constexpr (std::is_same_v<T, pi::ai::AssistantMessage>) {
+                                    for (auto& c : v.content) {
+                                        if (std::holds_alternative<pi::ai::TextContent>(c))
+                                            o << theme.primary << std::get<pi::ai::TextContent>(c).text << "\x1b[0m";
+                                        else if (std::holds_alternative<pi::ai::ToolCall>(c))
+                                            o << theme.dim << "[tool: "
+                                              << std::get<pi::ai::ToolCall>(c).name << "]\x1b[0m";
+                                    }
+                                    o << "\n";
+                                } else {
+                                    o << theme.dim << "← " << v.tool_name
+                                      << (v.is_error ? " [error]" : " [ok]") << "\x1b[0m\n";
+                                }
+                            }, m);
+                            if (!o.str().empty()) state.turns.push_back(o.str());
+                        }
+                        std::ostringstream o;
+                        o << theme.dim << "(resumed " << ctx.messages.size()
+                          << " messages from " << target << ")\n\x1b[0m";
+                        state.turns.push_back(o.str());
+                        state.redraw_needed = true;
+                    }
+                    refresh_chat();
+                    tui.render();
+                    continue;
+                }
                 if (cmd == "/tree") {
                     std::lock_guard<std::mutex> g(state_mtx);
                     state.turns.push_back(theme.dim + "[session tree — V2: not yet wired into interactive mode]\n\x1b[0m");
@@ -570,7 +937,7 @@ int run_interactive(const pi::ai::Model& model,
                 {
                     std::lock_guard<std::mutex> g(state_mtx);
                     std::ostringstream o;
-                    o << theme.accent << "› " << theme.primary << text << "\x1b[0m\n";
+                    o << theme.user_label << "› " << theme.primary << text << "\x1b[0m\n";
                     state.turns.push_back(o.str());
                     state.history.push_back(pi::ai::UserMessage{});
                     std::get<pi::ai::UserMessage>(state.history.back()).content.push_back(

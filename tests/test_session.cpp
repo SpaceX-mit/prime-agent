@@ -16,6 +16,71 @@ namespace fs = std::filesystem;
 
 using namespace pi;
 
+TEST_CASE("session resume: build_session_context replays user/assistant/tool messages") {
+    auto dir = fs::temp_directory_path() / "pi_test_session_resume";
+    fs::create_directories(dir);
+    auto path = (dir / "resume.jsonl").string();
+    fs::remove(path);
+
+    coding::SessionManager sm(path);
+    coding::SessionHeader h;
+    h.id = "resume1";
+    h.timestamp = "2026-01-01T00:00:00Z";
+    h.cwd = "/tmp";
+    REQUIRE(sm.initialize(h).is_ok());
+
+    // user → assistant (text + toolCall) → toolResult → user (turn 2)
+    auto append = [&](const core::Json& msg) {
+        coding::SessionEntry e;
+        e.type = "message";
+        e.data["message"] = msg;
+        CHECK(sm.append_entry(e).is_ok());
+    };
+    append({{"role", "user"},
+            {"content", core::Json::array({core::Json{{"type", "text"}, {"text", "ping"}}})}});
+    append({{"role", "assistant"},
+            {"content", core::Json::array({
+                core::Json{{"type", "text"}, {"text", "pong"}},
+                core::Json{{"type", "toolCall"}, {"id", "tc1"}, {"name", "bash"},
+                           {"arguments", core::Json{{"command", "echo hi"}}}},
+            })},
+            {"stopReason", "tool_use"}});
+    append({{"role", "toolResult"}, {"toolCallId", "tc1"}, {"toolName", "bash"},
+            {"isError", false},
+            {"content", core::Json::array({core::Json{{"type", "text"}, {"text", "hi"}}})}});
+    append({{"role", "user"},
+            {"content", core::Json::array({core::Json{{"type", "text"}, {"text", "again"}}})}});
+
+    auto hdr = sm.read_header();
+    REQUIRE(hdr.has_value());
+    auto entries = sm.read_entries();
+    auto ctx = coding::build_session_context(*hdr, entries, false);
+    REQUIRE(ctx.messages.size() == 4);
+
+    REQUIRE(std::holds_alternative<ai::UserMessage>(ctx.messages[0]));
+    REQUIRE(std::holds_alternative<ai::AssistantMessage>(ctx.messages[1]));
+    REQUIRE(std::holds_alternative<ai::ToolResultMessage>(ctx.messages[2]));
+    REQUIRE(std::holds_alternative<ai::UserMessage>(ctx.messages[3]));
+
+    auto& am = std::get<ai::AssistantMessage>(ctx.messages[1]);
+    CHECK(am.stop_reason == "tool_use");
+    bool saw_text = false, saw_call = false;
+    for (auto& c : am.content) {
+        if (std::holds_alternative<ai::TextContent>(c) &&
+            std::get<ai::TextContent>(c).text == "pong") saw_text = true;
+        if (std::holds_alternative<ai::ToolCall>(c) &&
+            std::get<ai::ToolCall>(c).name == "bash") saw_call = true;
+    }
+    CHECK(saw_text);
+    CHECK(saw_call);
+
+    auto& tr = std::get<ai::ToolResultMessage>(ctx.messages[2]);
+    CHECK(tr.tool_name == "bash");
+    CHECK_FALSE(tr.is_error);
+
+    fs::remove_all(dir);
+}
+
 TEST_CASE("session entry encode/decode") {
     coding::SessionEntry e;
     e.type = "message";

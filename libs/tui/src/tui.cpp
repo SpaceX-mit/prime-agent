@@ -21,28 +21,40 @@ void TUI::render() {
     auto [rows, cols] = term_.size();
     (void)rows;
     auto lines = root_->render(cols);
-    // Pad lines to `cols` width with spaces, then append ANSI reset.
-    std::string frame;
-    frame.reserve(lines.size() * (cols + 16));
-    for (auto& l : lines) {
-        // Strip ANSI to count width.
-        // Simple: assume l is at most cols; if longer, truncate visually.
-        // For V1 we just append as-is.
-        frame += l;
-        frame += "\x1b[0m\r\n";
-    }
-    if (frame == prev_frame_) {
-        return;  // no change
-    }
-    prev_frame_ = frame;
-    // Repaint: move cursor home + clear + write.
+    // Per-row diff: clear+rewrite only lines that changed since the last
+    // frame. Avoids the full clear_screen() flicker that the previous
+    // implementation caused on every keystroke / streaming delta.
     std::string out;
-    out.reserve(frame.size() + 8);
-    out += pi::core::ansi::clear_screen();
-    out += pi::core::ansi::move_cursor(1, 1);
-    out += frame;
-    term_.write(out);
-    term_.flush();
+    out.reserve(64);
+    out += pi::core::ansi::hide_cursor();
+
+    bool full_repaint = (cols != prev_cols_) ||
+                        (lines.size() != prev_lines_.size());
+    if (full_repaint) {
+        out += pi::core::ansi::clear_screen();
+        out += pi::core::ansi::move_cursor(1, 1);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            out += lines[i];
+            out += "\x1b[0m";
+            if (i + 1 < lines.size()) out += "\r\n";
+        }
+    } else {
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (lines[i] == prev_lines_[i]) continue;
+            out += pi::core::ansi::move_cursor(static_cast<int>(i) + 1, 1);
+            out += pi::core::ansi::clear_line();
+            out += lines[i];
+            out += "\x1b[0m";
+        }
+    }
+    out += pi::core::ansi::show_cursor();
+    if (out.size() > pi::core::ansi::hide_cursor().size() +
+                     pi::core::ansi::show_cursor().size()) {
+        term_.write(out);
+        term_.flush();
+    }
+    prev_lines_ = std::move(lines);
+    prev_cols_ = cols;
 }
 
 bool TUI::handle_key() {

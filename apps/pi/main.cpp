@@ -496,7 +496,24 @@ int main(int argc, char** argv) {
             sopts.max_tokens = max_tokens;
             sopts.temperature = temperature;
             std::string cwd = core::path::current_working_dir().value_or(".");
-            return tui::modes::run_interactive(*model, sopts, cwd);
+            // Resolve resume target: --session <id>, -c (newest), or -r (newest for now).
+            std::string resume_path;
+            if (!session_id.empty()) {
+                resume_path = coding::SessionManager::resolve_id_prefix(session_id);
+                if (resume_path.empty()) {
+                    std::cerr << "error: no unique session matches '" << session_id << "'\n";
+                    return 2;
+                }
+            } else if (continue_last || resume_pick) {
+                auto all = coding::SessionManager::list_all();
+                if (all.empty()) {
+                    std::cerr << "error: no saved sessions to resume\n";
+                    return 2;
+                }
+                resume_path = all.front().path;
+                // ponytail: -r treated same as -c (newest); full picker UI when needed.
+            }
+            return tui::modes::run_interactive(*model, sopts, cwd, resume_path);
         }
         if (!rpc_mode) {
             std::cerr << kUsage;

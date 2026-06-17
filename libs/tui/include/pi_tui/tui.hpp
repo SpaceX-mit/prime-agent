@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace pi::tui {
 
@@ -45,7 +46,8 @@ private:
     Terminal& term_;
     Theme theme_;
     ComponentPtr root_;
-    std::string prev_frame_;
+    std::vector<std::string> prev_lines_;  // last rendered lines, per-row diff cache
+    int prev_cols_ = 0;
     bool quit_ = false;
 };
 

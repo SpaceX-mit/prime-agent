@@ -3,6 +3,7 @@ add_library(pi_tui STATIC
     src/terminal.cpp
     src/tui.cpp
     src/theme.cpp
+    src/think_filter.cpp
     src/components/input.cpp
     src/components/editor.cpp
     src/components/footer.cpp

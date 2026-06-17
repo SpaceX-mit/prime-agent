@@ -16,6 +16,9 @@
 #include "pi_ai/models.hpp"
 #include "pi_ai/stream_simple.hpp"
 #include "pi_ai/types.hpp"
+#include "pi_coding/auth_storage.hpp"
+#include "pi_coding/session_manager.hpp"
+#include "pi_coding/settings_manager.hpp"
 #include "pi_coding/tools/bash_tool.hpp"
 #include "pi_coding/tools/edit_tool.hpp"
 #include "pi_coding/tools/read_tool.hpp"
@@ -57,6 +60,10 @@ OPTIONS:
       --api-key <key>         Override API key
       --max-tokens <n>        Limit output tokens
       --temperature <f>       Sampling temperature
+  -c, --continue              Continue the most recent session
+  -r, --resume                Pick a session to resume
+      --session <id>          Open a specific session (8+ char prefix)
+      --export <path>         Export a session to HTML (V2)
   -p <text>                   Print mode (agent loop with bash/read/write/edit)
       --json                  Emit JSON events instead of plain text
 
@@ -97,11 +104,34 @@ void print_models_json() {
 }
 
 std::string resolve_api_key(const std::string& provider) {
+    // Priority: PRIME_AGENT_API_KEY > provider-specific env > auth.json > settings.json
     if (auto k = core::env::get("PRIME_AGENT_API_KEY"); k && !k->empty()) return *k;
+
     if (provider == "anthropic") {
         if (auto k = core::env::get("ANTHROPIC_API_KEY"); k && !k->empty()) return *k;
     } else if (provider == "openai") {
         if (auto k = core::env::get("OPENAI_API_KEY"); k && !k->empty()) return *k;
+    }
+
+    // auth.json
+    if (auto h = core::path::home_dir(); h) {
+        coding::AuthStorage auth(*h + "/.pi/agent/auth.json");
+        if (auto c = auth.get(provider); c.has_value()
+            && c->type == coding::AuthCredential::Type::ApiKey
+            && !c->api_key.key.empty()) {
+            return c->api_key.key;
+        }
+    }
+
+    // settings.json: apiKeys.<provider>
+    if (auto h = core::path::home_dir(); h) {
+        coding::SettingsManager sm(*h + "/.pi/agent/settings.json");
+        const auto& d = sm.get().data;
+        if (d.contains("apiKeys") && d["apiKeys"].is_object()) {
+            if (auto v = d["apiKeys"].find(provider); v != d["apiKeys"].end() && v->is_string()) {
+                return v->get<std::string>();
+            }
+        }
     }
     return "";
 }
@@ -114,6 +144,28 @@ std::string get_text_content(const pi::ai::AssistantMessage& m) {
         }
     }
     return out;
+}
+
+/// Print a session selector (a simple numbered list) and return the chosen index, or -1.
+int pick_session(const std::vector<coding::SessionInfo>& sessions) {
+    if (sessions.empty()) return -1;
+    std::cout << "Available sessions:\n";
+    for (size_t i = 0; i < sessions.size() && i < 20; ++i) {
+        std::cout << "  [" << (i + 1) << "] " << sessions[i].id
+                  << "  " << sessions[i].timestamp
+                  << "  " << sessions[i].message_count << " msgs"
+                  << (sessions[i].name ? "  " + *sessions[i].name : "")
+                  << "\n";
+    }
+    std::cout << "Enter number (or 0 to cancel): " << std::flush;
+    std::string line;
+    if (!std::getline(std::cin, line)) return -1;
+    try {
+        int n = std::stoi(line);
+        if (n == 0) return -1;
+        if (n >= 1 && n <= (int)sessions.size()) return n - 1;
+    } catch (...) {}
+    return -1;
 }
 
 int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
@@ -270,6 +322,10 @@ int main(int argc, char** argv) {
     bool show_version = false;
     bool list_models = false;
     bool as_json = false;
+    bool continue_last = false;     // -c
+    bool resume_pick = false;       // -r
+    std::string session_id;         // --session
+    std::string export_path;        // --export
     std::string prompt;
     bool has_prompt = false;
     std::string model_id;
@@ -312,6 +368,16 @@ int main(int argc, char** argv) {
             if (i + 1 >= args.size()) { std::cerr << "error: --temperature requires an argument\n"; return 2; }
             try { temperature = std::stod(args[++i]); }
             catch (...) { std::cerr << "error: invalid --temperature\n"; return 2; }
+        } else if (a == "-c" || a == "--continue") {
+            continue_last = true;
+        } else if (a == "-r" || a == "--resume") {
+            resume_pick = true;
+        } else if (a == "--session") {
+            if (i + 1 >= args.size()) { std::cerr << "error: --session requires an argument\n"; return 2; }
+            session_id = args[++i];
+        } else if (a == "--export") {
+            if (i + 1 >= args.size()) { std::cerr << "error: --export requires an argument\n"; return 2; }
+            export_path = args[++i];
         } else if (core::str::starts_with(a, "-")) {
             std::cerr << "warn: unknown option: " << a << " (ignored)\n";
         } else {

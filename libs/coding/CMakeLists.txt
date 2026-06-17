@@ -4,6 +4,9 @@ add_library(pi_coding STATIC
     src/tools/read.cpp
     src/tools/write.cpp
     src/tools/edit.cpp
+    src/session_manager.cpp
+    src/settings_manager.cpp
+    src/auth_storage.cpp
 )
 
 target_include_directories(pi_coding

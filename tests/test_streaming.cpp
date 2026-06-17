@@ -16,13 +16,21 @@
 #include "test_framework.hpp"
 
 #include "pi_ai/event_stream.hpp"
+#include "pi_ai/models.hpp"
+#include "pi_ai/provider.hpp"
+#include "pi_ai/stream_simple.hpp"
 #include "pi_ai/types.hpp"
+#include "pi_agent/agent_loop.hpp"
+#include "pi_agent/tool.hpp"
 
+using namespace pi::ai;
+
+#include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <thread>
 #include <vector>
 
-using namespace pi::ai;
 
 namespace {
 
@@ -168,3 +176,112 @@ TEST_CASE("EventStream result() returns final message after stream end") {
     CHECK(text == "done");
     CHECK(r.value().stop_reason == "stop");
 }
+
+// ===========================================================================
+// INC-002: interactive mode must not block the main loop on agent run
+// ===========================================================================
+
+TEST_CASE("MutableAbort can be signaled and observed") {
+    auto a = std::make_shared<pi::agent::MutableAbort>();
+    CHECK_FALSE(a->aborted());
+    a->signal();
+    CHECK(a->aborted());
+}
+
+// Custom scripted provider that takes a controllable amount of time
+// so we can verify the main thread is NOT blocked while the agent runs.
+namespace {
+class SlowProvider : public Provider {
+public:
+    SlowProvider(int delay_ms) : delay_ms_(delay_ms) {}
+    ApiKind api() const override { return ApiKind::OpenAICompletions; }
+    std::string name() const override { return "slow-test"; }
+    std::shared_ptr<EventStream> stream(
+        const Model&, const Context&, const StreamOptions&) override {
+        auto out = std::make_shared<EventStream>();
+        std::thread([out, delay_ms = delay_ms_]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+            (void)delay_ms;
+            AssistantMessage m;
+            out->push(AssistantMessageEvent::start(m));
+            out->push(AssistantMessageEvent::text_start(0, m));
+            TextContent tc; tc.text = "done";
+            m.content.push_back(tc);
+            out->push(AssistantMessageEvent::text_delta(0, "done", m));
+            out->push(AssistantMessageEvent::text_end(0, "done", m));
+            m.stop_reason = "stop";
+            out->push(AssistantMessageEvent::done("stop", m));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            out->end(std::move(m));
+        }).detach();
+        return out;
+    }
+private:
+    int delay_ms_;
+};
+}  // namespace
+
+TEST_CASE("stream_simple on background thread does not block caller (INC-002)") {
+    // Build the SlowProvider directly and call its stream() through a
+    // shim that mimics what stream_simple does — a background thread
+    // that drains the provider's EventStream into a returned one.
+    // This proves the caller is not blocked while the agent runs.
+
+    auto slow = std::make_shared<SlowProvider>(/*delay_ms=*/500);
+
+    // Mimic stream_simple: spawn a background thread to drain sub.
+    // We use OpenAICompletionsProvider-style forwarding to keep this
+    // test independent of any registered provider.
+    // Build a minimal "agent" by using SlowProvider directly.
+
+    // Register SlowProvider under a unique name for this test only.
+    static bool registered = false;
+    if (!registered) {
+        ProviderRegistry::instance().register_provider(slow);
+        registered = true;
+    }
+
+    // Find a model that matches SlowProvider's name.
+    // (We don't have such a model in builtin_models, so we synthesize one.)
+    Model m;
+    m.id = "slow-test-model";
+    m.provider = slow->name();
+    m.api = ApiKind::OpenAICompletions;
+
+    Context ctx;
+    UserMessage um;
+    um.content.push_back(TextContent{"hi"});
+    ctx.messages.push_back(um);
+    SimpleStreamOptions sopts;
+    sopts.api_key = "fake";
+
+    auto t0 = std::chrono::steady_clock::now();
+    auto stream = stream_simple(m, ctx, sopts);
+    auto t1 = std::chrono::steady_clock::now();
+    auto return_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    // stream_simple should return in <100ms even though the provider
+    // takes 500ms internally — because the work is on a background thread.
+    CHECK(return_ms < 100);
+
+    // Simulate the fixed interactive-mode main loop: drain events
+    // non-blockingly while the agent runs.
+    int main_loop_ticks = 0;
+    int total_events = 0;
+    while (!stream->finished()) {
+        // Drain all available events.
+        while (auto ev = stream->try_pull()) ++total_events;
+        ++main_loop_ticks;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(3)) {
+            break;  // safety bail
+        }
+    }
+    // Drain any remaining events.
+    while (auto ev = stream->try_pull()) ++total_events;
+
+    // The agent took ~510ms total. With 10ms ticks, main loop should
+    // have ticked ~50 times — definitely more than 5.
+    CHECK(main_loop_ticks > 5);
+    CHECK(total_events > 0);
+}
+

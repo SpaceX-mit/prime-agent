@@ -12,6 +12,7 @@
 #include "pi_core/error.hpp"
 #include "pi_core/json.hpp"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -35,6 +36,15 @@ public:
 class NullAbort : public AbortSignal {
 public:
     bool aborted() const override { return false; }
+};
+
+/// Stateful abort signal: starts not-aborted, can be flipped via `signal()`.
+class MutableAbort : public AbortSignal {
+public:
+    void signal() { aborted_.store(true); }
+    bool aborted() const override { return aborted_.load(); }
+private:
+    std::atomic<bool> aborted_{false};
 };
 
 /// Tool execution result.

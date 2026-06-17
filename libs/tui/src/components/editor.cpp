@@ -152,7 +152,9 @@ std::vector<std::string> Editor::render(int width) const {
 bool Editor::on_key(const KeyEvent& ev) {
     switch (ev.kind) {
         case KeyEvent::Kind::Char:
-            insert_char(ev.ch);
+            // ev.ch is a full UTF-8 character (1-4 bytes). Insert all
+            // bytes at once and advance the cursor by the byte length.
+            insert_str(ev.ch);
             history_idx_ = -1;
             return true;
         case KeyEvent::Kind::Enter:

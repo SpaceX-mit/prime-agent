@@ -175,3 +175,72 @@ TEST_CASE("Input backspace updates render output") {
     CHECK(lines[0].find("xy") == std::string::npos);
     CHECK(lines[0].find("x") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// INC-005 regression tests: UTF-8 multi-byte characters (CJK / emoji) must
+// be inserted as a single grapheme. Before the fix, KeyEvent::Char carried
+// only a single byte (char) and Terminal::try_read_key() read one byte at a
+// time, so typing "你" (3 bytes: E4 BD A0) produced 3 separate Char events
+// that were each inserted independently, yielding replacement glyphs (▒)
+// and a corrupted multi-byte string that the LLM downstream couldn't parse.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Input insert UTF-8 multi-byte char as one grapheme") {
+    Theme theme = Theme::dark();
+    components::Input input(theme);
+    input.set_prompt("> ");
+    KeyEvent k;
+    // "你" is U+4F60 = E4 BD A0 (3 bytes).
+    k.kind = KeyEvent::Kind::Char;
+    k.ch = std::string("\xE4\xBD\xA0", 3);
+    input.on_key(k);
+    CHECK(input.text() == "\xE4\xBD\xA0");
+    CHECK(input.text().size() == 3);  // 3 bytes, 1 grapheme
+}
+
+TEST_CASE("Input insert two CJK characters stays valid UTF-8") {
+    Theme theme = Theme::dark();
+    components::Input input(theme);
+    input.set_prompt("> ");
+    KeyEvent k;
+    // Type "你好" (hello in Chinese). 你=E4 BD A0, 好=E5 A5 BD.
+    k.kind = KeyEvent::Kind::Char; k.ch = std::string("\xE4\xBD\xA0", 3);
+    input.on_key(k);
+    k.ch = std::string("\xE5\xA5\xBD", 3);
+    input.on_key(k);
+    CHECK(input.text() == "\xE4\xBD\xA0\xE5\xA5\xBD");
+    CHECK(input.text().size() == 6);
+}
+
+TEST_CASE("Input backspace removes whole CJK char, not one byte") {
+    Theme theme = Theme::dark();
+    components::Input input(theme);
+    input.set_prompt("> ");
+    KeyEvent k;
+    k.kind = KeyEvent::Kind::Char; k.ch = std::string("\xE4\xBD\xA0", 3);
+    input.on_key(k);  // 你
+    k.ch = std::string("a"); input.on_key(k);
+    CHECK(input.text() == "\xE4\xBD\xA0""a");
+    CHECK(input.text().size() == 4);
+    k.kind = KeyEvent::Kind::Backspace; input.on_key(k);
+    CHECK(input.text() == "\xE4\xBD\xA0");  // 'a' gone, 你 intact
+    CHECK(input.text().size() == 3);
+    k.kind = KeyEvent::Kind::Backspace; input.on_key(k);
+    CHECK(input.text().empty());  // 你 deleted as one unit
+}
+
+TEST_CASE("Input Left arrow jumps over CJK char in one step") {
+    Theme theme = Theme::dark();
+    components::Input input(theme);
+    input.set_prompt("> ");
+    KeyEvent k;
+    k.kind = KeyEvent::Kind::Char; k.ch = std::string("\xE4\xBD\xA0", 3);
+    input.on_key(k);
+    CHECK(input.text().size() == 3);
+    k.kind = KeyEvent::Kind::Left; input.on_key(k);
+    // Cursor should jump back by 3 bytes (one grapheme), not 1.
+    CHECK(input.text().size() == 3);  // text unchanged
+    // After Left, cursor_ is 0; another Left is a no-op.
+    k.kind = KeyEvent::Kind::Left; input.on_key(k);
+    CHECK(input.text().size() == 3);
+}

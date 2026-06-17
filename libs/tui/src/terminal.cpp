@@ -92,30 +92,37 @@ KeyEvent parse_escape_sequence(std::string_view seq) {
     return ev;
 }
 
-KeyEvent classify(char c) {
+KeyEvent classify(std::string_view utf8) {
     KeyEvent ev;
-    if (c == '\r' || c == '\n') { ev.kind = KeyEvent::Kind::Enter; return ev; }
-    if (c == 0x7F || c == 0x08) { ev.kind = KeyEvent::Kind::Backspace; return ev; }
-    if (c == 0x1B) { ev.kind = KeyEvent::Kind::Escape; return ev; }
-    if (c == 0x09) { ev.kind = KeyEvent::Kind::Tab; return ev; }
-    if (c >= 1 && c <= 26) {
-        // Ctrl-A..Ctrl-Z
-        static const KeyEvent::Kind kCtrl[] = {
-            KeyEvent::Kind::CtrlA, KeyEvent::Kind::CtrlB, KeyEvent::Kind::CtrlC,
-            KeyEvent::Kind::CtrlD, KeyEvent::Kind::CtrlE, KeyEvent::Kind::CtrlF,
-            KeyEvent::Kind::CtrlG, KeyEvent::Kind::CtrlH, KeyEvent::Kind::CtrlI,
-            KeyEvent::Kind::CtrlJ, KeyEvent::Kind::CtrlK, KeyEvent::Kind::CtrlL,
-            KeyEvent::Kind::CtrlM, KeyEvent::Kind::CtrlN, KeyEvent::Kind::CtrlO,
-            KeyEvent::Kind::CtrlP, KeyEvent::Kind::CtrlQ, KeyEvent::Kind::CtrlR,
-            KeyEvent::Kind::CtrlS, KeyEvent::Kind::CtrlT, KeyEvent::Kind::CtrlU,
-            KeyEvent::Kind::CtrlV, KeyEvent::Kind::CtrlW, KeyEvent::Kind::CtrlX,
-            KeyEvent::Kind::CtrlY, KeyEvent::Kind::CtrlZ,
-        };
-        ev.kind = kCtrl[c - 1];
-        return ev;
+    if (utf8.empty()) { ev.kind = KeyEvent::Kind::Unknown; return ev; }
+    unsigned char c = static_cast<unsigned char>(utf8[0]);
+    if (utf8.size() == 1) {
+        if (c == '\r' || c == '\n') { ev.kind = KeyEvent::Kind::Enter; return ev; }
+        if (c == 0x7F || c == 0x08) { ev.kind = KeyEvent::Kind::Backspace; return ev; }
+        if (c == 0x1B) { ev.kind = KeyEvent::Kind::Escape; return ev; }
+        if (c == 0x09) { ev.kind = KeyEvent::Kind::Tab; return ev; }
+        if (c >= 1 && c <= 26) {
+            // Ctrl-A..Ctrl-Z
+            static const KeyEvent::Kind kCtrl[] = {
+                KeyEvent::Kind::CtrlA, KeyEvent::Kind::CtrlB, KeyEvent::Kind::CtrlC,
+                KeyEvent::Kind::CtrlD, KeyEvent::Kind::CtrlE, KeyEvent::Kind::CtrlF,
+                KeyEvent::Kind::CtrlG, KeyEvent::Kind::CtrlH, KeyEvent::Kind::CtrlI,
+                KeyEvent::Kind::CtrlJ, KeyEvent::Kind::CtrlK, KeyEvent::Kind::CtrlL,
+                KeyEvent::Kind::CtrlM, KeyEvent::Kind::CtrlN, KeyEvent::Kind::CtrlO,
+                KeyEvent::Kind::CtrlP, KeyEvent::Kind::CtrlQ, KeyEvent::Kind::CtrlR,
+                KeyEvent::Kind::CtrlS, KeyEvent::Kind::CtrlT, KeyEvent::Kind::CtrlU,
+                KeyEvent::Kind::CtrlV, KeyEvent::Kind::CtrlW, KeyEvent::Kind::CtrlX,
+                KeyEvent::Kind::CtrlY, KeyEvent::Kind::CtrlZ,
+            };
+            ev.kind = kCtrl[c - 1];
+            return ev;
+        }
     }
+    // Default: printable character. For multi-byte UTF-8 the full string
+    // is preserved as `ev.ch` so the input layer can insert it as a
+    // single grapheme.
     ev.kind = KeyEvent::Kind::Char;
-    ev.ch = c;
+    ev.ch = std::string(utf8);
     return ev;
 }
 
@@ -197,6 +204,41 @@ std::optional<KeyEvent> Terminal::try_read_key(int timeout_ms) {
     ssize_t n = ::read(STDIN_FILENO, &c, 1);
     if (n <= 0) return std::nullopt;
 
+    // UTF-8 lead-byte detection: assemble the full character so callers
+    // receive a complete grapheme per Char event. Without this, typing
+    // CJK / emoji produces 2-4 Char events per typed character, which
+    // get inserted as separate bytes and render as replacement glyphs
+    // (INC-005).
+    auto utf8_seq_len = [](unsigned char b) -> int {
+        if (b < 0x80)  return 1;   // ASCII
+        if (b < 0xC0)  return -1;  // stray continuation byte (invalid)
+        if (b < 0xE0)  return 2;
+        if (b < 0xF0)  return 3;
+        if (b < 0xF8)  return 4;
+        return -1;                 // > 4 bytes (invalid)
+    };
+    int seq_len = utf8_seq_len(c);
+    std::string utf8_char;
+    utf8_char.push_back(static_cast<char>(c));
+    if (seq_len > 1) {
+        // Read continuation bytes (each must start with bits 10xxxxxx).
+        for (int i = 1; i < seq_len; ++i) {
+            unsigned char cb;
+            ssize_t m = ::read(STDIN_FILENO, &cb, 1);
+            if (m != 1 || (cb & 0xC0) != 0x80) {
+                // Malformed sequence. Stop and let whatever we have be
+                // processed as-is; downstream will likely show replacement
+                // glyphs for the partial bytes but won't deadlock.
+                break;
+            }
+            utf8_char.push_back(static_cast<char>(cb));
+        }
+    } else if (seq_len < 0) {
+        // Invalid lead byte — treat as a single raw byte so the user can
+        // still see something happened (better than dropping it silently).
+        seq_len = 1;
+    }
+
     if (c == 0x1B) {
         // Could be escape sequence or just escape.
         // Peek for more bytes.
@@ -231,7 +273,7 @@ std::optional<KeyEvent> Terminal::try_read_key(int timeout_ms) {
         return ev;
     }
 
-    return classify(static_cast<char>(c));
+    return classify(utf8_char);
 }
 
 void Terminal::on_resize(std::function<void(int, int)> cb) {

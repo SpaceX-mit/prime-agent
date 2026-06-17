@@ -32,7 +32,14 @@ struct KeyEvent {
         Unknown,
     };
     Kind kind = Kind::Char;
-    char ch = 0;       // for Kind::Char
+    // For Kind::Char this carries the **full UTF-8 character** (1-4
+    // bytes), assembled by try_read_key() from the raw byte stream. For
+    // ASCII input the string has length 1; for CJK / emoji it has length
+    // 2-4. Use this, NOT a single char, to avoid splitting multibyte
+    // sequences which corrupts text into replacement glyphs (e.g. typing
+    // "你" produced "▒▒▒" because we treated each byte as its own
+    // character).
+    std::string ch;       // for Kind::Char (UTF-8, 1-4 bytes)
     std::string raw;   // for paste / unknown (raw bytes)
 
     bool is_char() const { return kind == Kind::Char; }

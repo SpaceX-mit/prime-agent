@@ -10,6 +10,20 @@
 
 namespace pi::tui::components {
 
+namespace {
+
+// Walk back over UTF-8 bytes to find the previous character start.
+size_t utf8_prev(const std::string& s, size_t pos) {
+    if (pos == 0) return 0;
+    size_t p = pos;
+    do {
+        --p;
+    } while (p > 0 && ((unsigned char)s[p] & 0xC0) == 0x80);
+    return p;
+}
+
+}  // namespace
+
 Input::Input(Theme theme) : theme_(std::move(theme)) {}
 
 void Input::set_prompt(std::string p) { prompt_ = std::move(p); }
@@ -77,8 +91,13 @@ std::vector<std::string> Input::render(int width) const {
 bool Input::on_key(const KeyEvent& ev) {
     switch (ev.kind) {
         case KeyEvent::Kind::Char: {
-            text_.insert(text_.begin() + static_cast<ptrdiff_t>(cursor_), ev.ch);
-            cursor_++;
+            // ev.ch is now a full UTF-8 character (1-4 bytes), assembled
+            // by Terminal::try_read_key(). Insert all bytes at once and
+            // advance the cursor by the byte length so multi-byte CJK /
+            // emoji characters don't get split.
+            text_.insert(text_.begin() + static_cast<ptrdiff_t>(cursor_),
+                         ev.ch.begin(), ev.ch.end());
+            cursor_ += ev.ch.size();
             history_idx_ = -1;
             return true;
         }
@@ -87,15 +106,25 @@ bool Input::on_key(const KeyEvent& ev) {
             return true;
         case KeyEvent::Kind::Backspace:
             if (cursor_ > 0) {
-                text_.erase(text_.begin() + static_cast<ptrdiff_t>(cursor_) - 1);
-                cursor_--;
+                // Erase the previous UTF-8 character in one go so multi-byte
+                // graphemes (CJK / emoji) don't get half-deleted.
+                size_t prev = utf8_prev(text_, cursor_);
+                text_.erase(text_.begin() + static_cast<ptrdiff_t>(prev),
+                            text_.begin() + static_cast<ptrdiff_t>(cursor_));
+                cursor_ = prev;
             }
             return true;
         case KeyEvent::Kind::Left:
-            if (cursor_ > 0) cursor_--;
+            if (cursor_ > 0) cursor_ = utf8_prev(text_, cursor_);
             return true;
         case KeyEvent::Kind::Right:
-            if (cursor_ < text_.size()) cursor_++;
+            if (cursor_ < text_.size()) {
+                size_t p = cursor_ + 1;
+                while (p < text_.size() &&
+                       ((unsigned char)text_[p] & 0xC0) == 0x80)
+                    ++p;
+                cursor_ = p;
+            }
             return true;
         case KeyEvent::Kind::Home:
             cursor_ = 0;

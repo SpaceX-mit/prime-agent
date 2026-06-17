@@ -4,11 +4,16 @@ add_library(pi_coding STATIC
     src/tools/read.cpp
     src/tools/write.cpp
     src/tools/edit.cpp
+    src/tools/grep.cpp
+    src/tools/find.cpp
+    src/tools/ls.cpp
     src/session_manager.cpp
     src/settings_manager.cpp
     src/auth_storage.cpp
     src/compaction.cpp
     src/modes/rpc.cpp
+    src/html_export.cpp
+    src/oauth.cpp
 )
 
 target_include_directories(pi_coding

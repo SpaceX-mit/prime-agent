@@ -3,8 +3,10 @@
 #include "test_framework.hpp"
 
 #include "pi_coding/auth_storage.hpp"
+#include "pi_coding/html_export.hpp"
 #include "pi_coding/session_manager.hpp"
 #include "pi_coding/settings_manager.hpp"
+#include "pi_core/file_io.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -148,6 +150,44 @@ TEST_CASE("session resolve_id_prefix") {
 
     auto resolved = coding::SessionManager::resolve_id_prefix("AAAA", dir.string());
     CHECK(resolved.find("AAAA") != std::string::npos);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("html export roundtrip") {
+    auto dir = fs::temp_directory_path() / "pi_test_html_export";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    auto path = (dir / "test.jsonl").string();
+    coding::SessionManager sm(path);
+    coding::SessionHeader h;
+    h.id = "html01"; h.timestamp = "2026-01-01T00:00:00Z"; h.cwd = "/tmp";
+    REQUIRE(sm.initialize(h).is_ok());
+
+    coding::SessionEntry e1;
+    e1.type = "message";
+    e1.data["message"] = {{"role", "user"}, {"content", "hello"}};
+    REQUIRE(sm.append_entry(e1).is_ok());
+
+    coding::SessionEntry e2;
+    e2.type = "message";
+    e2.data["message"] = {{"role", "assistant"}, {"content", "hi there"}};
+    REQUIRE(sm.append_entry(e2).is_ok());
+
+    auto html_path = (dir / "out.html").string();
+    int n = coding::export_session_html(path, html_path);
+    CHECK(n == 2);
+    CHECK(fs::exists(html_path));
+
+    // Sanity: HTML contains the words.
+    auto content_r = core::file::read(html_path);
+    REQUIRE(content_r.is_ok());
+    auto content = content_r.value();
+    CHECK(content.find("<!DOCTYPE html>") != std::string::npos);
+    CHECK(content.find("hello") != std::string::npos);
+    CHECK(content.find("hi there") != std::string::npos);
+    CHECK(content.find("message-user") != std::string::npos);
+    CHECK(content.find("message-assistant") != std::string::npos);
 
     fs::remove_all(dir);
 }

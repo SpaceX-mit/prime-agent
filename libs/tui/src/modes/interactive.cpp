@@ -5,6 +5,8 @@
 
 #include "pi_agent/agent_loop.hpp"
 #include "pi_ai/stream_simple.hpp"
+#include "pi_coding/compaction.hpp"
+#include "pi_coding/session_manager.hpp"
 #include "pi_core/ansi.hpp"
 #include "pi_core/log.hpp"
 #include "pi_core/strutil.hpp"
@@ -31,6 +33,10 @@ struct ChatState {
     std::string current_text;
     bool streaming = false;
     std::string status;
+    std::vector<pi::ai::Message> history;     // full conversation (for /compact, /tree)
+    pi::coding::SessionManager* session = nullptr;
+    std::string model_id;
+    int compaction_count = 0;
 };
 
 std::vector<std::string> render_chat(const ChatState& s, const Theme& t, int width) {
@@ -175,6 +181,54 @@ int run_interactive(const pi::ai::Model& model,
                 }
                 if (cmd.rfind("/model ", 0) == 0) {
                     state.turns.push_back(theme.dim + "(model switch not yet implemented in V1: " + cmd.substr(7) + ")\x1b[0m\n");
+                    continue;
+                }
+                if (cmd == "/compact") {
+                    if (state.history.empty()) {
+                        state.turns.push_back(theme.dim + "(no history to compact)\n\x1b[0m");
+                        continue;
+                    }
+                    state.streaming = true;
+                    state.status = "compacting…";
+                    footer->set_status("compacting…");
+                    refresh_chat();
+                    tui.render();
+
+                    pi::coding::CompactionSettings settings;
+                    auto compact_res = pi::coding::compact(
+                        model, opts, state.history, settings);
+                    if (compact_res.aborted) {
+                        state.turns.push_back(theme.error + "(compaction failed)\n\x1b[0m");
+                    } else if (compact_res.drop_count == 0) {
+                        state.turns.push_back(theme.dim + "(nothing to compact)\n\x1b[0m");
+                    } else {
+                        // Replace history with the kept+summary form.
+                        state.history = compact_res.kept_messages;
+                        state.compaction_count++;
+                        std::ostringstream o;
+                        o << theme.dim << "[compacted " << compact_res.drop_count
+                          << " earlier messages (" << state.compaction_count
+                          << " compactions total)]\n\x1b[0m";
+                        state.turns.push_back(o.str());
+
+                        // Persist compaction entry if we have a session.
+                        if (state.session) {
+                            pi::coding::SessionEntry e;
+                            e.type = "compaction";
+                            e.data["summary"] = compact_res.summary;
+                            e.data["droppedCount"] = compact_res.drop_count;
+                            state.session->append_entry(e);
+                        }
+                    }
+                    state.streaming = false;
+                    state.status.clear();
+                    footer->set_status("");
+                    refresh_chat();
+                    tui.render();
+                    continue;
+                }
+                if (cmd == "/tree") {
+                    state.turns.push_back(theme.dim + "[session tree — V2: not yet wired into interactive mode]\n\x1b[0m");
                     continue;
                 }
 

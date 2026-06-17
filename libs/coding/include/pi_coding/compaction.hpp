@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "pi_ai/stream_simple.hpp"
 #include "pi_ai/types.hpp"
 #include "pi_core/json.hpp"
 
@@ -31,11 +32,32 @@ bool should_compact(const std::vector<pi::ai::Message>& msgs,
 int find_cut_point(const std::vector<pi::ai::Message>& msgs,
                    const CompactionSettings& s);
 
+/// Serialize a conversation to plain text (for summarization prompts).
+std::string serialize_conversation(const std::vector<pi::ai::Message>& msgs);
+
 /// Result of a compaction.
 struct CompactionResult {
     std::string summary;       // LLM-generated summary of the dropped prefix
     std::vector<pi::ai::Message> kept_messages;
     int drop_count = 0;
+    bool aborted = false;
 };
 
+/// Generate a summary by calling the LLM. Blocks until completion.
+/// Returns CompactionResult.summary on success.
+CompactionResult generate_summary(
+    const pi::ai::Model& model,
+    const pi::ai::SimpleStreamOptions& opts,
+    const std::vector<pi::ai::Message>& to_summarize);
+
+/// Convenience: full compaction pipeline (find cut point + summarize).
+/// Returns the result plus the kept messages. The summary is meant to be
+/// prepended to the kept messages as a "compaction" entry.
+CompactionResult compact(
+    const pi::ai::Model& model,
+    const pi::ai::SimpleStreamOptions& opts,
+    const std::vector<pi::ai::Message>& msgs,
+    const CompactionSettings& settings);
+
 }  // namespace pi::coding
+

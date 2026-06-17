@@ -1,5 +1,5 @@
 // tests/test_tools.cpp
-// Exercise bash/read/write/edit tools without going through the network.
+// Exercise bash/read/write/edit/grep/find/ls tools without going through the network.
 
 #define TEST_FRAMEWORK_IMPLEMENT
 #include "test_framework.hpp"
@@ -7,12 +7,17 @@
 #include "pi_agent/tool.hpp"
 #include "pi_coding/tools/bash_tool.hpp"
 #include "pi_coding/tools/edit_tool.hpp"
+#include "pi_coding/tools/find_tool.hpp"
+#include "pi_coding/tools/grep_tool.hpp"
+#include "pi_coding/tools/ls_tool.hpp"
 #include "pi_coding/tools/read_tool.hpp"
 #include "pi_coding/tools/write_tool.hpp"
 
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <string>
 
 namespace fs = std::filesystem;
 
@@ -25,6 +30,11 @@ static std::string get_text(const std::vector<pi::ai::Content>& c) {
         }
     }
     return {};
+}
+
+static void write_file(const std::string& path, const std::string& content) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    f << content;
 }
 
 TEST_CASE("bash tool: echo hello") {
@@ -115,9 +125,7 @@ TEST_CASE("edit tool: single replacement") {
 TEST_CASE("edit tool: ambiguous oldString fails without allOccurrences") {
     auto tmp = (fs::temp_directory_path() / "pi_test_edit2.txt").string();
     fs::remove(tmp);
-    {
-        std::ofstream f(tmp); f << "foo bar foo\n";
-    }
+    write_file(tmp, "foo bar foo\n");
     coding::tools::EditTool e(fs::temp_directory_path().string());
     pi::core::Json ea;
     ea["path"] = tmp;
@@ -132,9 +140,7 @@ TEST_CASE("edit tool: ambiguous oldString fails without allOccurrences") {
 TEST_CASE("edit tool: allOccurrences=true replaces all") {
     auto tmp = (fs::temp_directory_path() / "pi_test_edit3.txt").string();
     fs::remove(tmp);
-    {
-        std::ofstream f(tmp); f << "foo bar foo\n";
-    }
+    write_file(tmp, "foo bar foo\n");
     coding::tools::EditTool e(fs::temp_directory_path().string());
     pi::core::Json ea;
     ea["path"] = tmp;
@@ -152,4 +158,88 @@ TEST_CASE("edit tool: allOccurrences=true replaces all") {
     auto text = get_text(rr.content);
     CHECK(text.find("baz bar baz") != std::string::npos);
     fs::remove(tmp);
+}
+
+TEST_CASE("ls tool: lists a directory") {
+    auto dir = fs::temp_directory_path() / "pi_test_ls";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    write_file((dir / "a.txt").string(), "hi\n");
+    write_file((dir / "b.txt").string(), "bye\n");
+    fs::create_directory(dir / "subdir");
+    coding::tools::LsTool ls(dir.string());
+    pi::core::Json args;
+    args["path"] = dir.string();
+    args["all"] = true;
+    pi::agent::NullAbort sig;
+    auto r = ls.execute(args, sig, nullptr);
+    CHECK_FALSE(r.is_error);
+    auto text = get_text(r.content);
+    CHECK(text.find("a.txt") != std::string::npos);
+    CHECK(text.find("b.txt") != std::string::npos);
+    CHECK(text.find("subdir") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("find tool: finds files by glob") {
+    auto dir = fs::temp_directory_path() / "pi_test_find";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "sub");
+    write_file((dir / "a.cpp").string(), "");
+    write_file((dir / "b.txt").string(), "");
+    write_file((dir / "sub" / "c.cpp").string(), "");
+    coding::tools::FindTool ft(dir.string());
+    pi::core::Json args;
+    args["pattern"] = "*.cpp";
+    args["path"] = dir.string();
+    pi::agent::NullAbort sig;
+    auto r = ft.execute(args, sig, nullptr);
+    CHECK_FALSE(r.is_error);
+    auto text = get_text(r.content);
+    CHECK(text.find("a.cpp") != std::string::npos);
+    CHECK(text.find("sub/c.cpp") != std::string::npos);
+    CHECK(text.find("b.txt") == std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("grep tool: searches file contents") {
+    auto dir = fs::temp_directory_path() / "pi_test_grep";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    write_file((dir / "a.txt").string(), "hello world\nfoo bar\n");
+    write_file((dir / "b.txt").string(), "goodbye world\nbaz qux\n");
+    coding::tools::GrepTool gt(dir.string());
+    pi::core::Json args;
+    args["pattern"] = "world";
+    args["path"] = dir.string();
+    pi::agent::NullAbort sig;
+    auto r = gt.execute(args, sig, nullptr);
+    CHECK_FALSE(r.is_error);
+    auto text = get_text(r.content);
+    CHECK(text.find("Found 2 matches") != std::string::npos);
+    CHECK(text.find("hello world") != std::string::npos);
+    CHECK(text.find("goodbye world") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("grep tool: include glob filters results") {
+    auto dir = fs::temp_directory_path() / "pi_test_grep2";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    write_file((dir / "a.cpp").string(), "TODO fix this\n");
+    write_file((dir / "b.txt").string(), "TODO also this\n");
+    coding::tools::GrepTool gt(dir.string());
+    pi::core::Json args;
+    args["pattern"] = "TODO";
+    args["path"] = dir.string();
+    args["include"] = "*.cpp";
+    pi::agent::NullAbort sig;
+    auto r = gt.execute(args, sig, nullptr);
+    CHECK_FALSE(r.is_error);
+    auto text = get_text(r.content);
+    CHECK(text.find("Found 1 match") != std::string::npos);
+    CHECK(text.find("a.cpp:") != std::string::npos);
+    CHECK(text.find("TODO fix this") != std::string::npos);
+    CHECK(text.find("b.txt") == std::string::npos);
+    fs::remove_all(dir);
 }

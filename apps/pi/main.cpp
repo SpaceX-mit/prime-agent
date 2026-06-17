@@ -17,6 +17,8 @@
 #include "pi_ai/stream_simple.hpp"
 #include "pi_ai/types.hpp"
 #include "pi_coding/auth_storage.hpp"
+#include "pi_coding/compaction.hpp"
+#include "pi_coding/html_export.hpp"
 #include "pi_coding/modes/rpc.hpp"
 #include "pi_coding/session_manager.hpp"
 #include "pi_coding/settings_manager.hpp"
@@ -394,6 +396,8 @@ int main(int argc, char** argv) {
         } else if (a == "--export") {
             if (i + 1 >= args.size()) { std::cerr << "error: --export requires an argument\n"; return 2; }
             export_path = args[++i];
+        } else if (a == "--compact") {
+            // No-op for now; /compact slash command in interactive mode handles it.
         } else if (core::str::starts_with(a, "-")) {
             std::cerr << "warn: unknown option: " << a << " (ignored)\n";
         } else {
@@ -409,6 +413,28 @@ int main(int argc, char** argv) {
     if (show_help) { std::cout << kUsage; return 0; }
     if (show_version) { std::cout << "pi 0.1.0\n"; return 0; }
     if (list_models) { print_models_json(); return 0; }
+    if (!export_path.empty()) {
+        // Find session to export.
+        std::string src;
+        if (!session_id.empty()) {
+            src = coding::SessionManager::resolve_id_prefix(session_id);
+        }
+        if (src.empty() && continue_last) {
+            auto all = coding::SessionManager::list_all();
+            if (!all.empty()) src = all.front().path;
+        }
+        if (src.empty()) {
+            std::cerr << "error: no session to export (use --session <id> or -c)\n";
+            return 2;
+        }
+        int n = coding::export_session_html(src, export_path);
+        if (n < 0) {
+            std::cerr << "error: failed to export session " << src << " to " << export_path << "\n";
+            return 2;
+        }
+        std::cout << "Exported " << n << " messages to " << export_path << "\n";
+        return 0;
+    }
     if (rpc_mode) {
         // RPC mode doesn't need a prompt; we'll dispatch after resolving model+key.
     } else if (list_sessions) {

@@ -8,6 +8,7 @@ add_library(pi_ai STATIC
     src/providers/anthropic.cpp
     src/providers/openai.cpp
     src/providers/google.cpp
+    src/providers/mistral.cpp
     src/register_providers.cpp
 )
 

@@ -7,6 +7,8 @@ add_library(pi_coding STATIC
     src/session_manager.cpp
     src/settings_manager.cpp
     src/auth_storage.cpp
+    src/compaction.cpp
+    src/modes/rpc.cpp
 )
 
 target_include_directories(pi_coding

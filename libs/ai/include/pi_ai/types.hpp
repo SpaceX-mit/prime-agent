@@ -64,13 +64,20 @@ struct UserMessage {
     pi::core::Json to_json() const {
         pi::core::Json j;
         j["role"] = "user";
-        j["content"] = serialize_content();
+        pi::core::Json arr = pi::core::Json::array();
+        for (auto& c : content) {
+            std::visit([&](auto& v) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(v)>, TextContent>) {
+                    arr.push_back({{"type", "text"}, {"text", v.text}});
+                } else if constexpr (std::is_same_v<std::decay_t<decltype(v)>, ImageContent>) {
+                    arr.push_back({{"type", "image"}, {"mimeType", v.mime_type}, {"data", v.data}});
+                }
+            }, c);
+        }
+        j["content"] = arr;
         if (timestamp) j["timestamp"] = *timestamp;
         return j;
     }
-
-private:
-    pi::core::Json serialize_content() const;
 };
 
 struct AssistantMessage {

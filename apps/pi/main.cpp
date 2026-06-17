@@ -17,6 +17,7 @@
 #include "pi_ai/stream_simple.hpp"
 #include "pi_ai/types.hpp"
 #include "pi_coding/auth_storage.hpp"
+#include "pi_coding/modes/rpc.hpp"
 #include "pi_coding/session_manager.hpp"
 #include "pi_coding/settings_manager.hpp"
 #include "pi_coding/tools/bash_tool.hpp"
@@ -66,6 +67,8 @@ OPTIONS:
       --export <path>         Export a session to HTML (V2)
   -p <text>                   Print mode (agent loop with bash/read/write/edit)
       --json                  Emit JSON events instead of plain text
+      --mode <mode>           One of: interactive (default), rpc, json
+      --list-sessions         List all sessions (JSON)
 
 ENVIRONMENT:
   ANTHROPIC_API_KEY           Anthropic API key
@@ -321,7 +324,9 @@ int main(int argc, char** argv) {
     bool show_help = false;
     bool show_version = false;
     bool list_models = false;
+    bool list_sessions = false;
     bool as_json = false;
+    bool rpc_mode = false;
     bool continue_last = false;     // -c
     bool resume_pick = false;       // -r
     std::string session_id;         // --session
@@ -342,6 +347,17 @@ int main(int argc, char** argv) {
             show_version = true;
         } else if (a == "--list-models") {
             list_models = true;
+        } else if (a == "--list-sessions") {
+            list_sessions = true;
+        } else if (a == "--mode") {
+            if (i + 1 >= args.size()) { std::cerr << "error: --mode requires an argument\n"; return 2; }
+            std::string mode = args[++i];
+            if (mode == "rpc") rpc_mode = true;
+            else if (mode == "json") as_json = true;
+            else if (mode != "interactive") {
+                std::cerr << "error: unknown mode: " << mode << "\n";
+                return 2;
+            }
         } else if (a == "--json") {
             as_json = true;
         } else if (a == "-p" || a == "--prompt") {
@@ -393,9 +409,26 @@ int main(int argc, char** argv) {
     if (show_help) { std::cout << kUsage; return 0; }
     if (show_version) { std::cout << "pi 0.1.0\n"; return 0; }
     if (list_models) { print_models_json(); return 0; }
+    if (rpc_mode) {
+        // RPC mode doesn't need a prompt; we'll dispatch after resolving model+key.
+    } else if (list_sessions) {
+        auto sessions = coding::SessionManager::list_all();
+        auto j = core::Json::array();
+        for (auto& s : sessions) {
+            j.push_back({
+                {"id", s.id}, {"path", s.path}, {"timestamp", s.timestamp},
+                {"cwd", s.cwd}, {"messageCount", s.message_count},
+                {"name", s.name ? *s.name : ""},
+            });
+        }
+        std::cout << j.dump(2) << "\n";
+        return 0;
+    }
     if (!has_prompt) {
         // No prompt: try interactive mode if stdin is a TTY.
-        if (tui::Terminal::is_tty()) {
+        if (rpc_mode) {
+            // Fall through to model + key resolution below.
+        } else if (tui::Terminal::is_tty()) {
             // Resolve model first (need API key).
             const ai::Model* model = nullptr;
             if (!model_id.empty()) {
@@ -432,8 +465,10 @@ int main(int argc, char** argv) {
             std::string cwd = core::path::current_working_dir().value_or(".");
             return tui::modes::run_interactive(*model, sopts, cwd);
         }
-        std::cerr << kUsage;
-        return 1;
+        if (!rpc_mode) {
+            std::cerr << kUsage;
+            return 1;
+        }
     }
 
     if (prompt == "-") {
@@ -455,7 +490,11 @@ int main(int argc, char** argv) {
             return 2;
         }
     } else {
-        if (auto ak = core::env::get("ANTHROPIC_API_KEY"); ak && !ak->empty()) {
+        // Default: pick model based on available keys.
+        if (!api_key_override.empty()) {
+            // Hard to know which provider; default to anthropic.
+            model = ai::find_model("anthropic/claude-sonnet-4-5");
+        } else if (auto ak = core::env::get("ANTHROPIC_API_KEY"); ak && !ak->empty()) {
             model = ai::find_model("anthropic/claude-sonnet-4-5");
         } else if (auto ok = core::env::get("OPENAI_API_KEY"); ok && !ok->empty()) {
             model = ai::find_model("openai/gpt-4o-mini");
@@ -480,5 +519,10 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    if (rpc_mode) {
+        return coding::modes::run_rpc_mode(*model, opts,
+                                            core::path::current_working_dir().value_or("."),
+                                            [&](const std::string& p){ return resolve_api_key(p); });
+    }
     return run_agent_print_mode(*model, prompt, opts, as_json);
 }

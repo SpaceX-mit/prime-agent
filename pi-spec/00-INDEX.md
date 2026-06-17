@@ -31,6 +31,7 @@
 | 210 | 依赖 | [Network-Protocols](./210-Network-Protocols.md) | 网络协议（LLM / OAuth / 终端） |
 | 220 | 依赖 | [Build-Toolchain-Deps](./220-Build-Toolchain-Deps.md) | 构建/开发依赖（不进运行时） |
 | 230 | 依赖 | [CPP-Port-Mapping](./230-CPP-Port-Mapping.md) | C/C++ 端口映射（每个依赖的替代方案） |
+| 240 | 计划 | [Implementation-Plan](./240-Implementation-Plan.md) | 分 8 阶段的实现计划（每阶段验收标准） |
 
 ## 仓库一句话定义
 

@@ -1,0 +1,45 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+dist/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!cmake/*.cmake
+!CMakeLists.txt
+!cmake/*.cmake.in
+
+# Compiled
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.app
+
+# Dependencies
+conanfile.lock
+vcpkg_manifest_installed/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local pi config / session leakage
+.pi-runtime/
+*.session.jsonl
+auth.local.json
+
+# OS
+Thumbs.db

@@ -14,6 +14,9 @@
 | 40 | 模块 | [Module-pi-coding-agent](./40-Module-pi-coding-agent.md) | `pi` CLI：交互 / Print / RPC 三种运行模式 |
 | 50 | 功能 | [Features](./50-Features.md) | 端到端可观察的功能清单（按子系统分组） |
 | 60 | 验收 | [Acceptance-Criteria](./60-Acceptance-Criteria.md) | 每个子系统需要被验证的硬性指标 |
+| 70 | 架构 | [Architecture](./70-Architecture.md) | 模块级别架构图（9 张 Mermaid 图） |
+| 80 | 架构 | [Sequences](./80-Sequences.md) | 模块间时序图（10 个核心流程） |
+| 90 | 接口 | [Interfaces](./90-Interfaces.md) | 跨模块关键接口的完整 TS 签名 |
 
 ## 仓库一句话定义
 

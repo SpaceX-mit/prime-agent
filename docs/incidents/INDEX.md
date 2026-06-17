@@ -20,6 +20,7 @@ Each document follows the same structure:
 | 2026-06-17 | INC-001 | Streaming events silently dropped due to non-blocking `try_pull()` race | **Critical** | ✅ Fixed (commit `67cd7d8`) |
 | 2026-06-17 | INC-002 | Interactive mode freezes the main loop during agent runs | **Critical** | ✅ Fixed (commit `ab89f4c`) |
 | 2026-06-17 | INC-003 | Multi-turn conversation support missing — each turn loses prior history | **Critical** | ✅ Fixed |
+| 2026-06-17 | V3-milestone | V3: `run_agent_loop_continue` + JSONL session persistence + `tools/upstream-diff.sh` | — | ✅ Shipped (`cc88a96`) |
 
 ## Severity levels
 

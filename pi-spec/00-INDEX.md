@@ -22,6 +22,15 @@
 | 120 | 子系统 | [Subsystem-pi-agent-core](./120-Subsystem-pi-agent-core.md) | `@earendil-works/pi-agent-core` 功能分组 |
 | 130 | 子系统 | [Subsystem-pi-tui](./130-Subsystem-pi-tui.md) | `@earendil-works/pi-tui` 功能分组 |
 | 140 | 子系统 | [Subsystem-pi-coding-agent](./140-Subsystem-pi-coding-agent.md) | `@earendil-works/pi-coding-agent` 功能分组 |
+| 150 | 依赖 | [Dependencies-Index](./150-Dependencies-Index.md) | 依赖梳理总索引（C/C++ 重实现用） |
+| 160 | 依赖 | [External-Services](./160-External-Services.md) | 外部服务清单（Anthropic / OpenAI / ...） |
+| 170 | 依赖 | [Dependencies-pi-ai](./170-Dependencies-pi-ai.md) | `pi-ai` 10 个依赖详解 |
+| 180 | 依赖 | [Dependencies-pi-agent-core](./180-Dependencies-pi-agent-core.md) | `pi-agent-core` 3 个依赖详解 |
+| 190 | 依赖 | [Dependencies-pi-tui](./190-Dependencies-pi-tui.md) | `pi-tui` 2 依赖 + 2 native module |
+| 200 | 依赖 | [Dependencies-pi-coding-agent](./200-Dependencies-pi-coding-agent.md) | `pi-coding-agent` 19 依赖 + native + WASM |
+| 210 | 依赖 | [Network-Protocols](./210-Network-Protocols.md) | 网络协议（LLM / OAuth / 终端） |
+| 220 | 依赖 | [Build-Toolchain-Deps](./220-Build-Toolchain-Deps.md) | 构建/开发依赖（不进运行时） |
+| 230 | 依赖 | [CPP-Port-Mapping](./230-CPP-Port-Mapping.md) | C/C++ 端口映射（每个依赖的替代方案） |
 
 ## 仓库一句话定义
 

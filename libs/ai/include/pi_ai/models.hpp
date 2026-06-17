@@ -15,6 +15,7 @@ const std::vector<Model>& builtin_models();
 /// Built-in Anthropic models.
 const std::vector<Model>& anthropic_models();
 const std::vector<Model>& openai_models();
+const std::vector<Model>& google_models();
 
 /// Find a model by "<provider>/<id>".
 const Model* find_model(const std::string& key);

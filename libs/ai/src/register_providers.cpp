@@ -3,6 +3,7 @@
 
 #include "pi_ai/provider.hpp"
 #include "pi_ai/providers/anthropic.hpp"
+#include "pi_ai/providers/google.hpp"
 #include "pi_ai/providers/openai.hpp"
 
 namespace pi::ai {
@@ -16,6 +17,8 @@ struct AutoRegister {
             std::make_shared<providers::OpenAICompletionsProvider>());
         ProviderRegistry::instance().register_provider(
             std::make_shared<providers::OpenAIResponsesProvider>());
+        ProviderRegistry::instance().register_provider(
+            std::make_shared<providers::GoogleProvider>());
     }
 };
 static AutoRegister kAutoRegister;

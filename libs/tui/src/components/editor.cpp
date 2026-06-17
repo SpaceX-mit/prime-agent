@@ -157,6 +157,39 @@ bool Editor::on_key(const KeyEvent& ev) {
             insert_str(ev.ch);
             history_idx_ = -1;
             return true;
+        case KeyEvent::Kind::Paste:
+            // V3.7: bracketed paste — insert all pasted text at once,
+            // sanitized so the buffer remains valid UTF-8 (V3.9).
+            {
+                std::string clean;
+                clean.reserve(ev.ch.size());
+                // Reuse the same logic as Input::on_key's sanitize. Since
+                // Editor already has utf8_prev, we add a small inline
+                // sanitizer here too to keep the components independent.
+                auto is_cont = [](unsigned char b) { return (b & 0xC0) == 0x80; };
+                size_t i = 0;
+                while (i < ev.ch.size()) {
+                    unsigned char b = static_cast<unsigned char>(ev.ch[i]);
+                    int n = (b < 0x80) ? 1 : (b < 0xC0) ? -1 :
+                            (b < 0xE0) ? 2 : (b < 0xF0) ? 3 : (b < 0xF8) ? 4 : -1;
+                    if (n < 0 || i + n > ev.ch.size()) {
+                        clean.append("\xEF\xBF\xBD");
+                        if (n > 0 && i + n <= ev.ch.size()) i += n;
+                        else ++i;
+                        continue;
+                    }
+                    bool ok = true;
+                    for (int k = 1; k < n; ++k) {
+                        if (!is_cont(static_cast<unsigned char>(ev.ch[i + k]))) { ok = false; break; }
+                    }
+                    if (!ok) { clean.append("\xEF\xBF\xBD"); ++i; continue; }
+                    clean.append(ev.ch, i, n);
+                    i += n;
+                }
+                insert_str(clean);
+            }
+            history_idx_ = -1;
+            return true;
         case KeyEvent::Kind::Enter:
             insert_char('\n');
             history_idx_ = -1;

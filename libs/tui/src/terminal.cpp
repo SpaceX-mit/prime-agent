@@ -156,7 +156,26 @@ void Terminal::enter_raw_mode() {
     write(pi::core::ansi::enter_alt_screen());
     write(pi::core::ansi::hide_cursor());
     write(pi::core::ansi::clear_screen());
+    // V3.7: enable bracketed paste mode and Kitty keyboard protocol
+    // (disambiguate flag). Most modern terminals respond to these by
+    // wrapping pastes in ESC[200~...ESC[201~ and sending individual keys
+    // as CSI-u sequences with full Unicode codepoints.
+    write("\x1b[?2004h");  // bracketed paste mode
+    write("\x1b[>1u");     // Kitty disambiguate escape codes
+    bracketed_paste_active_ = true;
     flush();
+}
+
+void Terminal::enable_bracketed_paste_mode() {
+    write("\x1b[?2004h");
+    flush();
+    bracketed_paste_active_ = true;
+}
+
+void Terminal::disable_bracketed_paste_mode() {
+    write("\x1b[?2004l");
+    flush();
+    bracketed_paste_active_ = false;
 }
 
 void Terminal::leave_raw_mode() {
@@ -200,57 +219,50 @@ std::optional<KeyEvent> Terminal::try_read_key(int timeout_ms) {
                      timeout_ms < 0 ? nullptr : &tv);
     if (r <= 0) return std::nullopt;
 
-    unsigned char c;
-    ssize_t n = ::read(STDIN_FILENO, &c, 1);
-    if (n <= 0) return std::nullopt;
+    // V3.8: prepend any leftover bytes from a previous read that ended
+    // mid-UTF-8-sequence. After this, "working bytes" is the sequence
+    // we will classify this iteration.
+    std::string work = utf8_pending_;
+    utf8_pending_.clear();
 
-    // UTF-8 lead-byte detection: assemble the full character so callers
-    // receive a complete grapheme per Char event. Without this, typing
-    // CJK / emoji produces 2-4 Char events per typed character, which
-    // get inserted as separate bytes and render as replacement glyphs
-    // (INC-005).
-    auto utf8_seq_len = [](unsigned char b) -> int {
-        if (b < 0x80)  return 1;   // ASCII
-        if (b < 0xC0)  return -1;  // stray continuation byte (invalid)
-        if (b < 0xE0)  return 2;
-        if (b < 0xF0)  return 3;
-        if (b < 0xF8)  return 4;
-        return -1;                 // > 4 bytes (invalid)
+    // V3.7: detect paste-start sequence (ESC [ 200 ~). If we see it,
+    // accumulate bytes until paste-end (ESC [ 201 ~) and return as a
+    // single Paste event.
+    auto starts_with_esc = [&](const std::string& s) {
+        return s.size() >= 1 && (unsigned char)s[0] == 0x1B;
     };
-    int seq_len = utf8_seq_len(c);
-    std::string utf8_char;
-    utf8_char.push_back(static_cast<char>(c));
-    if (seq_len > 1) {
-        // Read continuation bytes (each must start with bits 10xxxxxx).
-        for (int i = 1; i < seq_len; ++i) {
-            unsigned char cb;
-            ssize_t m = ::read(STDIN_FILENO, &cb, 1);
-            if (m != 1 || (cb & 0xC0) != 0x80) {
-                // Malformed sequence. Stop and let whatever we have be
-                // processed as-is; downstream will likely show replacement
-                // glyphs for the partial bytes but won't deadlock.
-                break;
-            }
-            utf8_char.push_back(static_cast<char>(cb));
+    auto consume_byte = [&]() -> int {
+        if (!work.empty()) {
+            int b = (unsigned char)work[0];
+            work.erase(work.begin());
+            return b;
         }
-    } else if (seq_len < 0) {
-        // Invalid lead byte — treat as a single raw byte so the user can
-        // still see something happened (better than dropping it silently).
-        seq_len = 1;
-    }
+        unsigned char c;
+        ssize_t n = ::read(STDIN_FILENO, &c, 1);
+        if (n != 1) return -1;
+        return (int)c;
+    };
 
-    if (c == 0x1B) {
-        // Could be escape sequence or just escape.
-        // Peek for more bytes.
+    int first = consume_byte();
+    if (first < 0) return std::nullopt;
+
+    // ----------------------------------------------------------------
+    // V3.7: bracketed paste start detection.
+    // The terminal sends ESC [ 2 0 0 ~ as a single 6-byte sequence
+    // (1B 5B 32 30 30 7E) when paste begins, and ESC [ 2 0 1 ~ at the
+    // end. We accumulate everything in between and emit it as one
+    // Paste event.
+    // ----------------------------------------------------------------
+    if (first == 0x1B) {
+        // Peek the next byte; if it's '[', maybe an escape sequence.
         fd_set rf;
         FD_ZERO(&rf); FD_SET(STDIN_FILENO, &rf);
-        struct timeval t{0, 30'000};  // 30ms
+        struct timeval t{0, 30'000};
         if (::select(STDIN_FILENO + 1, &rf, nullptr, nullptr, &t) > 0) {
             unsigned char c2;
             if (::read(STDIN_FILENO, &c2, 1) == 1) {
                 if (c2 == '[' || c2 == 'O') {
                     std::string seq; seq.push_back(static_cast<char>(c2));
-                    // Read the rest of the sequence.
                     while (true) {
                         fd_set rf3; FD_ZERO(&rf3); FD_SET(STDIN_FILENO, &rf3);
                         struct timeval t3{0, 30'000};
@@ -260,9 +272,97 @@ std::optional<KeyEvent> Terminal::try_read_key(int timeout_ms) {
                         seq.push_back(static_cast<char>(c3));
                         if (c3 >= 0x40 && c3 <= 0x7E) break;  // final byte
                     }
+
+                    // Bracketed paste: ESC [ 200 ~ content ESC [ 201 ~
+                    if (seq == "[200~") {
+                        std::string pasted;
+                        // Read until we see ESC [ 201 ~.
+                        std::string esc_buf;
+                        while (true) {
+                            int b = consume_byte();
+                            if (b < 0) break;
+                            if (b == 0x1B) {
+                                esc_buf.push_back((char)b);
+                                continue;
+                            }
+                            if (!esc_buf.empty()) {
+                                esc_buf.push_back((char)b);
+                                if (esc_buf == "\x1b[201~") break;
+                                // Not the paste-end marker; flush.
+                                pasted += esc_buf;
+                                esc_buf.clear();
+                                continue;
+                            }
+                            pasted.push_back((char)b);
+                        }
+                        KeyEvent ev;
+                        ev.kind = KeyEvent::Kind::Paste;
+                        ev.ch = pasted;  // full UTF-8 content
+                        return ev;
+                    }
+
+                    // Kitty keyboard protocol: ESC [ <codepoint> [;<mod>] [:<event>] u
+                    // Disambiguate escape codes (flag 1) sends every key
+                    // as a CSI-u sequence. Format example:
+                    //   ESC [ 97 ; 5 u       → Ctrl-A
+                    //   ESC [ 22996 u        → CJK ideograph (single codepoint!)
+                    //   ESC [ 127 ; 5 : 1 u  → Ctrl-Del release
+                    // We accept the printable form (no Ctrl/Alt, codepoint
+                    // >= 32) and emit a single Char with the UTF-8 of that
+                    // codepoint — bypassing the multi-byte assembly entirely.
+                    if (seq.size() >= 3 && seq.back() == 'u' &&
+                        seq[0] == '[' &&
+                        (seq[1] >= '0' && seq[1] <= '9')) {
+                        // Parse <codepoint>[:<shifted>][;<mod>][:<event>]
+                        std::string body(seq.begin() + 1, seq.end() - 1);
+                        auto colon1 = body.find(':');
+                        auto semi1 = body.find(';');
+                        std::string cp_str = body.substr(
+                            0, std::min(colon1 == std::string::npos ? body.size() : colon1,
+                                        semi1 == std::string::npos ? body.size() : semi1));
+                        int mod = 1;
+                        if (semi1 != std::string::npos) {
+                            std::string mod_str = body.substr(semi1 + 1);
+                            auto colon2 = mod_str.find(':');
+                            if (colon2 != std::string::npos) mod_str = mod_str.substr(0, colon2);
+                            try { mod = std::stoi(mod_str); } catch (...) { mod = 1; }
+                        }
+                        // mod is 1-indexed (1 = no modifiers); subtract 1.
+                        int mod_bits = mod > 0 ? mod - 1 : 0;
+                        const int SHIFT = 1, ALT = 2, CTRL = 4;
+                        if ((mod_bits & (ALT | CTRL)) == 0) {
+                            try {
+                                int cp = std::stoi(cp_str);
+                                if (cp >= 32 && cp <= 0x10FFFF) {
+                                    // Encode codepoint as UTF-8.
+                                    std::string utf8_cp;
+                                    if (cp < 0x80) {
+                                        utf8_cp.push_back((char)cp);
+                                    } else if (cp < 0x800) {
+                                        utf8_cp.push_back((char)(0xC0 | (cp >> 6)));
+                                        utf8_cp.push_back((char)(0x80 | (cp & 0x3F)));
+                                    } else if (cp < 0x10000) {
+                                        utf8_cp.push_back((char)(0xE0 | (cp >> 12)));
+                                        utf8_cp.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+                                        utf8_cp.push_back((char)(0x80 | (cp & 0x3F)));
+                                    } else {
+                                        utf8_cp.push_back((char)(0xF0 | (cp >> 18)));
+                                        utf8_cp.push_back((char)(0x80 | ((cp >> 12) & 0x3F)));
+                                        utf8_cp.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+                                        utf8_cp.push_back((char)(0x80 | (cp & 0x3F)));
+                                    }
+                                    KeyEvent ev;
+                                    ev.kind = KeyEvent::Kind::Char;
+                                    ev.ch = utf8_cp;
+                                    return ev;
+                                }
+                            } catch (...) {}
+                        }
+                    }
+
                     return parse_escape_sequence(seq);
                 }
-                // It's just an Alt+key; treat as Escape + char
+                // Alt+key: treat as Escape.
                 KeyEvent ev;
                 ev.kind = KeyEvent::Kind::Escape;
                 return ev;
@@ -271,6 +371,47 @@ std::optional<KeyEvent> Terminal::try_read_key(int timeout_ms) {
         KeyEvent ev;
         ev.kind = KeyEvent::Kind::Escape;
         return ev;
+    }
+
+    // Not an escape sequence — assemble UTF-8 from the lead byte.
+    auto utf8_seq_len = [](unsigned char b) -> int {
+        if (b < 0x80)  return 1;   // ASCII
+        if (b < 0xC0)  return -1;  // stray continuation byte (invalid)
+        if (b < 0xE0)  return 2;
+        if (b < 0xF0)  return 3;
+        if (b < 0xF8)  return 4;
+        return -1;
+    };
+    int seq_len = utf8_seq_len(static_cast<unsigned char>(first));
+    std::string utf8_char;
+    utf8_char.push_back(static_cast<char>(first));
+    if (seq_len > 1) {
+        for (int i = 1; i < seq_len; ++i) {
+            unsigned char cb;
+            ssize_t m = ::read(STDIN_FILENO, &cb, 1);
+            if (m != 1 || (cb & 0xC0) != 0x80) {
+                // V3.8: continuation byte missing — buffer it as pending
+                // so the NEXT try_read_key call can prepend it. This
+                // handles partial UTF-8 sequences at read boundaries
+                // (mirrors Node.js StringDecoder).
+                if (m == 1) {
+                    utf8_pending_.push_back(static_cast<char>(cb));
+                }
+                break;
+            }
+            utf8_char.push_back(static_cast<char>(cb));
+        }
+    } else if (seq_len < 0) {
+        // V3.8: stray continuation byte at the start — if we have a
+        // pending buffer from before, the lead byte we needed was lost.
+        // Replace the orphan with U+FFFD so downstream still gets a
+        // printable grapheme instead of nothing.
+        if (!utf8_pending_.empty()) {
+            utf8_pending_.clear();
+            utf8_char = "\xEF\xBF\xBD";  // U+FFFD
+        } else {
+            seq_len = 1;  // pass through as raw byte
+        }
     }
 
     return classify(utf8_char);

@@ -513,3 +513,48 @@ TEST_CASE("run_agent_loop_continue rejects empty messages") {
     CHECK(error_am.error_message->find("no messages") != std::string::npos);
 }
 
+
+// ---------------------------------------------------------------------------
+// INC-006 regression: provider errors must produce AssistantMessage with
+// stop_reason="error" + error_message so the TUI can surface them.
+// Before the fix, errors went to stderr but the TUI's MessageEnd handler
+// silently dropped them — the user saw nothing after Enter.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("INC-006: error stream ends with AssistantMessage stop_reason=error") {
+    // Build a fake stream that emits a 401-style error.
+    class ErrorProvider : public pi::ai::Provider {
+    public:
+        pi::ai::ApiKind api() const override { return pi::ai::ApiKind::OpenAICompletions; }
+        std::string name() const override { return "error-provider"; }
+        std::shared_ptr<pi::ai::EventStream> stream(
+            const pi::ai::Model&, const pi::ai::Context&,
+            const pi::ai::StreamOptions&) override {
+            auto out = std::make_shared<pi::ai::EventStream>();
+            pi::ai::AssistantMessage partial;
+            partial.stop_reason = "error";
+            partial.error_message = "openai: HTTP 401: invalid api key";
+            out->push(pi::ai::AssistantMessageEvent::start(partial));
+            out->end(std::move(partial));
+            return out;
+        }
+    };
+    ErrorProvider p;
+    pi::ai::Context ctx;
+    pi::ai::UserMessage um;
+    um.content.push_back(pi::ai::TextContent{"hi"});
+    ctx.messages.push_back(um);
+    pi::ai::Model m;
+    m.provider = "error-provider";
+    pi::ai::StreamOptions opts;
+    opts.api_key = "x";
+    auto stream = p.stream(m, ctx, opts);
+    // The error state is stored in the stream's `final_` member by
+    // EventStream::end() and surfaced via result() / drain_to_completion().
+    auto result = stream->drain_to_completion(nullptr);
+    CHECK(result.is_ok());
+    auto final_msg = result.value();
+    CHECK(final_msg.stop_reason == "error");
+    CHECK(final_msg.error_message.has_value());
+    CHECK(final_msg.error_message->find("HTTP 401") != std::string::npos);
+}

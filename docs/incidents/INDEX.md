@@ -22,6 +22,7 @@ Each document follows the same structure:
 | 2026-06-17 | INC-003 | Multi-turn conversation support missing — each turn loses prior history | **Critical** | ✅ Fixed |
 | 2026-06-17 | INC-004 | TUI input box does not show what the user types — no redraw on input change, no cursor indicator | **Critical** | ✅ Fixed |
 | 2026-06-17 | INC-005 | TUI input box splits UTF-8 multibyte characters (CJK / emoji) → invalid UTF-8 in messages, system appears frozen | **Critical** | ✅ Fixed |
+| 2026-06-17 | INC-006 | Agent errors (HTTP 4xx/5xx, aborts) silently swallowed — input appears ignored | **Critical** | ✅ Fixed |
 | 2026-06-17 | V3-milestone | V3: `run_agent_loop_continue` + JSONL session persistence + `tools/upstream-diff.sh` | — | ✅ Shipped (`cc88a96`) |
 
 ## Severity levels

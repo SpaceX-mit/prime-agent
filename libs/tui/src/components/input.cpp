@@ -22,6 +22,69 @@ size_t utf8_prev(const std::string& s, size_t pos) {
     return p;
 }
 
+// V3.9: sanitize UTF-8. Replaces orphan continuation bytes and
+// overlong / out-of-range sequences with U+FFFD (\xEF\xBF\xBD) so
+// downstream providers always receive valid UTF-8 in messages[].
+// Walks the input once and produces a clean copy.
+std::string sanitize_utf8(const std::string& s) {
+    auto is_cont = [](unsigned char b) {
+        return (b & 0xC0) == 0x80;
+    };
+    auto seq_len = [](unsigned char b) -> int {
+        if (b < 0x80) return 1;
+        if (b < 0xC0) return -1;
+        if (b < 0xE0) return 2;
+        if (b < 0xF0) return 3;
+        if (b < 0xF8) return 4;
+        return -1;
+    };
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char b = static_cast<unsigned char>(s[i]);
+        int n = seq_len(b);
+        if (n < 0) {
+            out.append("\xEF\xBF\xBD");
+            ++i;
+            continue;
+        }
+        if (i + n > s.size()) {
+            // truncated at end
+            out.append("\xEF\xBF\xBD");
+            break;
+        }
+        bool ok = true;
+        for (int k = 1; k < n; ++k) {
+            if (!is_cont(static_cast<unsigned char>(s[i + k]))) { ok = false; break; }
+        }
+        if (!ok) {
+            out.append("\xEF\xBF\xBD");
+            ++i;
+            continue;
+        }
+        // Check for overlong encodings and surrogates.
+        uint32_t cp = 0;
+        if (n == 1) cp = b;
+        else if (n == 2) cp = ((b & 0x1F) << 6)  | (s[i+1] & 0x3F);
+        else if (n == 3) cp = ((b & 0x0F) << 12) | ((s[i+1] & 0x3F) << 6) | (s[i+2] & 0x3F);
+        else               cp = ((b & 0x07) << 18) | ((s[i+1] & 0x3F) << 12)
+                                | ((s[i+2] & 0x3F) << 6)  | (s[i+3] & 0x3F);
+        bool overlong = (n == 2 && cp < 0x80) || (n == 3 && cp < 0x800) ||
+                        (n == 4 && cp < 0x10000);
+        bool surrogate = (cp >= 0xD800 && cp <= 0xDFFF);
+        bool too_big = cp > 0x10FFFF;
+        if (overlong || surrogate || too_big) {
+            out.append("\xEF\xBF\xBD");
+            i += n;
+            continue;
+        }
+        out.append(s, i, n);
+        i += n;
+    }
+    return out;
+}
+
 }  // namespace
 
 Input::Input(Theme theme) : theme_(std::move(theme)) {}
@@ -98,6 +161,18 @@ bool Input::on_key(const KeyEvent& ev) {
             text_.insert(text_.begin() + static_cast<ptrdiff_t>(cursor_),
                          ev.ch.begin(), ev.ch.end());
             cursor_ += ev.ch.size();
+            history_idx_ = -1;
+            return true;
+        }
+        case KeyEvent::Kind::Paste: {
+            // V3.7: terminal sent a paste event (bracketed paste). Insert
+            // the entire pasted text at the cursor in one shot. V3.9 also
+            // runs UTF-8 sanitization here so the buffer cannot become
+            // invalid UTF-8 even if the pasted source was malformed.
+            std::string clean = sanitize_utf8(ev.ch);
+            text_.insert(text_.begin() + static_cast<ptrdiff_t>(cursor_),
+                         clean.begin(), clean.end());
+            cursor_ += clean.size();
             history_idx_ = -1;
             return true;
         }

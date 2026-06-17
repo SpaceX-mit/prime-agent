@@ -51,6 +51,15 @@ public:
     Terminal();
     ~Terminal();
 
+    // V3.7: Enable bracketed paste mode. When enabled, pasted text is
+    // wrapped in ESC[200~ ... ESC[201~ and emitted as a single
+    // KeyEvent{ kind=Paste, ch=<content> } instead of as N individual
+    // Char events. Most modern terminals enable this by default, but
+    // some need an explicit request.
+    void enable_bracketed_paste_mode();
+    void disable_bracketed_paste_mode();
+    bool is_bracketed_paste_active() const { return bracketed_paste_active_; }
+
     Terminal(const Terminal&) = delete;
     Terminal& operator=(const Terminal&) = delete;
 
@@ -81,6 +90,12 @@ public:
 
 private:
     bool raw_ = false;
+    bool bracketed_paste_active_ = false;
+    // V3.8: StringDecoder-style buffer for partial UTF-8 sequences that
+    // span read() boundaries. Contains the trailing 1-3 continuation
+    // bytes that arrived without their lead byte. try_read_key() will
+    // prepend this to the next byte read from stdin.
+    mutable std::string utf8_pending_;
     std::function<void(int, int)> on_resize_;
 };
 

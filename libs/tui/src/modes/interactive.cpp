@@ -287,15 +287,53 @@ int run_interactive(const pi::ai::Model& model,
                                 state.current_text += o.str();
                                 redraw = true;
                             } else if (aev.kind == pi::ai::AssistantMessageEvent::Kind::Done) {
-                                state.status = "done";
+                                // INC-006: do NOT silently drop the final
+                                // assistant text. Save it so MessageEnd can
+                                // attach it to current_text. Done is sent
+                                // before MessageEnd so the assistant may add
+                                // a trailing newline via MessageEnd path.
+                                status_msg = "done";
                             }
                             break;
                         }
-                        case pi::agent::AgentEvent::Kind::MessageEnd:
-                            // Persist each finalized message (assistant or
+                        case pi::agent::AgentEvent::Kind::MessageEnd: {
+                            // INC-006: surface assistant messages (text,
+                            // errors, aborts) to the user — previously we
+                            // only persisted to JSONL and silently dropped
+                            // the content. Compare upstream pi which calls
+                            // streamingComponent.updateContent() and then
+                            // surfaces errorMessage when stopReason is
+                            // "error" / "aborted".
+                            if (std::holds_alternative<pi::ai::AssistantMessage>(ev.message)) {
+                                const auto& am = std::get<pi::ai::AssistantMessage>(ev.message);
+                                // Extract final text from content blocks.
+                                std::string final_text;
+                                for (auto& c : am.content) {
+                                    if (std::holds_alternative<pi::ai::TextContent>(c)) {
+                                        final_text += std::get<pi::ai::TextContent>(c).text;
+                                    }
+                                }
+                                if (!final_text.empty()) {
+                                    state.current_text += final_text;
+                                }
+                                // Show error / abort messages in red.
+                                if (am.stop_reason == "error" ||
+                                    am.stop_reason == "aborted") {
+                                    std::ostringstream o;
+                                    o << "\n" << theme.error
+                                      << "[" << am.stop_reason << ": "
+                                      << (am.error_message ? *am.error_message : "(no detail)")
+                                      << "]\x1b[0m\n";
+                                    state.current_text += o.str();
+                                    status_msg = am.stop_reason;
+                                }
+                                redraw = true;  // surface final text / error
+                            }
+                            // Persist every finalized message (assistant or
                             // tool result) to the session JSONL.
                             append_message_entry_fn(ev.message);
                             break;
+                        }
                         case pi::agent::AgentEvent::Kind::ToolExecutionEnd: {
                             std::ostringstream o;
                             o << theme.dim << "← " << ev.tool_name

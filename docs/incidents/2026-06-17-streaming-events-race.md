@@ -314,7 +314,7 @@ Both were fixed in the same commit.
 
 | Action | Owner | Status |
 |---|---|---|
-| Add regression test for `stream_simple` event delivery | — | Pending |
+| Add regression test for `stream_simple` event delivery | self | ✅ Done — `tests/test_streaming.cpp` (4 cases, 15 assertions) |
 | Add a `--smoke-live` script for real-key validation | — | Pending |
 | Document the `pull()` vs `try_pull()` choice in `EventStream` header doc | — | Pending |
 

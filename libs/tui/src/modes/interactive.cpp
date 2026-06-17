@@ -5,10 +5,13 @@
 
 #include "pi_agent/agent_loop.hpp"
 #include "pi_ai/stream_simple.hpp"
+#include "pi_coding/auth_storage.hpp"
 #include "pi_coding/compaction.hpp"
+#include "pi_coding/oauth.hpp"
 #include "pi_coding/session_manager.hpp"
 #include "pi_core/ansi.hpp"
 #include "pi_core/log.hpp"
+#include "pi_core/path.hpp"
 #include "pi_core/strutil.hpp"
 #include "pi_tui/components/box.hpp"
 #include "pi_tui/components/footer.hpp"
@@ -181,6 +184,75 @@ int run_interactive(const pi::ai::Model& model,
                 }
                 if (cmd.rfind("/model ", 0) == 0) {
                     state.turns.push_back(theme.dim + "(model switch not yet implemented in V1: " + cmd.substr(7) + ")\x1b[0m\n");
+                    continue;
+                }
+                if (cmd.rfind("/login ", 0) == 0 || cmd == "/login") {
+                    // Print the OAuth URL for the given provider (if known),
+                    // then wait for the callback.
+                    std::string provider = cmd.size() > 6 ? cmd.substr(7) : "";
+                    if (provider.empty()) {
+                        state.turns.push_back(theme.error +
+                            "Usage: /login <provider>\n"
+                            "Known: anthropic (Claude.ai OAuth — V2 framework only)\n"
+                            "       For most providers, use --api-key or set API key env var.\n\x1b[0m");
+                        refresh_chat();
+                        tui.render();
+                        continue;
+                    }
+                    if (provider != "anthropic") {
+                        state.turns.push_back(theme.error +
+                            "/login for '" + provider + "' is not yet wired in V2. "
+                            "Use --api-key or env var instead.\n\x1b[0m");
+                        refresh_chat();
+                        tui.render();
+                        continue;
+                    }
+                    // Demo OAuth flow: print URL, wait for code on stdin.
+                    coding::OAuthConfig cfg;
+                    cfg.client_id = "9d1c185a-3a4b-4b3a-9b3e-3a3b3a3b3a3b";  // placeholder
+                    cfg.authorization_endpoint = "https://console.anthropic.com/oauth/authorize";
+                    cfg.token_endpoint = "https://console.anthropic.com/v1/oauth/token";
+                    cfg.scopes = {"user:profile", "user:inference"};
+                    cfg.extra_auth_params["grant_type"] = "authorization_code";
+
+                    auto pkce = coding::generate_pkce();
+                    coding::CallbackServer server(0);
+                    cfg.redirect_port = server.port();
+                    std::string url = coding::authorization_url(cfg, pkce, "pi-agent");
+
+                    std::ostringstream o;
+                    o << theme.accent << "Open this URL in your browser:\n" << theme.primary
+                      << "  " << url << "\n\x1b[0m"
+                      << theme.dim << "Waiting for callback on http://127.0.0.1:"
+                      << server.port() << "/callback ...\n\x1b[0m";
+                    state.turns.push_back(o.str());
+                    refresh_chat();
+                    tui.render();
+
+                    auto code = server.wait_for_code(120'000);
+                    if (!code) {
+                        state.turns.push_back(theme.error + "(timeout waiting for OAuth callback)\n\x1b[0m");
+                    } else {
+                        auto creds = coding::exchange_code(cfg, *code, pkce);
+                        if (!creds) {
+                            state.turns.push_back(theme.error +
+                                "(token exchange failed: " + creds.error().to_string() + ")\n\x1b[0m");
+                        } else {
+                            coding::AuthCredential ac;
+                            ac.type = coding::AuthCredential::Type::OAuth;
+                            ac.oauth.access_token = creds.value().access_token;
+                            ac.oauth.refresh_token = creds.value().refresh_token;
+                            ac.oauth.expires_at_ms = creds.value().expires_at_ms;
+                            if (auto h = core::path::home_dir(); h) {
+                                coding::AuthStorage auth(*h + "/.pi/agent/auth.json");
+                                auth.set(provider, ac);
+                            }
+                            state.turns.push_back(theme.success +
+                                "logged in as " + provider + "\n\x1b[0m");
+                        }
+                    }
+                    refresh_chat();
+                    tui.render();
                     continue;
                 }
                 if (cmd == "/compact") {

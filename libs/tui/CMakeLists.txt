@@ -4,6 +4,7 @@ add_library(pi_tui STATIC
     src/tui.cpp
     src/theme.cpp
     src/components/input.cpp
+    src/components/editor.cpp
     src/components/footer.cpp
     src/modes/interactive.cpp
 )
@@ -19,6 +20,7 @@ target_link_libraries(pi_tui
         pi_ai
         pi_agent
         pi_coding
+        pi_http
 )
 
 if(UNIX)

@@ -1,6 +1,26 @@
-# libs/tui/CMakeLists.txt (placeholder for Phase 3)
-add_library(pi_tui INTERFACE)
-target_include_directories(pi_tui INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+# libs/tui/CMakeLists.txt
+add_library(pi_tui STATIC
+    src/terminal.cpp
+    src/tui.cpp
+    src/theme.cpp
+    src/components/input.cpp
+    src/components/footer.cpp
+    src/modes/interactive.cpp
 )
-target_link_libraries(pi_tui INTERFACE pi_core)
+
+target_include_directories(pi_tui
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
+target_link_libraries(pi_tui
+    PUBLIC
+        pi_core
+        pi_ai
+        pi_agent
+        pi_coding
+)
+
+if(UNIX)
+    target_link_libraries(pi_tui PUBLIC pthread)
+endif()

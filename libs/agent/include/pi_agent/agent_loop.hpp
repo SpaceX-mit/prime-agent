@@ -56,7 +56,7 @@ struct AgentEvent {
     std::vector<pi::ai::ToolResultMessage> tool_results;
 
     static AgentEvent agent_start() { AgentEvent e; e.kind = Kind::AgentStart; return e; }
-    static AgentEvent agent_end(std::vector<pi::ai::Message> messages) {
+    static AgentEvent agent_end(std::vector<pi::ai::Message> /*messages*/) {
         AgentEvent e; e.kind = Kind::AgentEnd; return e;
     }
     static AgentEvent turn_start() { AgentEvent e; e.kind = Kind::TurnStart; return e; }

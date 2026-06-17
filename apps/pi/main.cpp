@@ -26,6 +26,8 @@
 #include "pi_core/log.hpp"
 #include "pi_core/path.hpp"
 #include "pi_core/strutil.hpp"
+#include "pi_tui/modes/interactive.hpp"
+#include "pi_tui/terminal.hpp"
 
 #include <atomic>
 #include <csignal>
@@ -326,6 +328,44 @@ int main(int argc, char** argv) {
     if (show_version) { std::cout << "pi 0.1.0\n"; return 0; }
     if (list_models) { print_models_json(); return 0; }
     if (!has_prompt) {
+        // No prompt: try interactive mode if stdin is a TTY.
+        if (tui::Terminal::is_tty()) {
+            // Resolve model first (need API key).
+            const ai::Model* model = nullptr;
+            if (!model_id.empty()) {
+                std::string key = model_id;
+                if (key.find('/') == std::string::npos && !provider_override.empty()) {
+                    key = provider_override + "/" + key;
+                }
+                model = ai::find_model(key);
+                if (!model) {
+                    std::cerr << "error: unknown model: " << key
+                              << " (try --list-models)\n";
+                    return 2;
+                }
+            } else {
+                if (auto ak = core::env::get("ANTHROPIC_API_KEY"); ak && !ak->empty()) {
+                    model = ai::find_model("anthropic/claude-sonnet-4-5");
+                } else if (auto ok = core::env::get("OPENAI_API_KEY"); ok && !ok->empty()) {
+                    model = ai::find_model("openai/gpt-4o-mini");
+                }
+                if (!model) {
+                    std::cerr << "error: no API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY,\n"
+                              << "       or use --api-key.\n";
+                    return 2;
+                }
+            }
+            ai::SimpleStreamOptions sopts;
+            sopts.api_key = !api_key_override.empty() ? api_key_override : resolve_api_key(model->provider);
+            if (sopts.api_key->empty()) {
+                std::cerr << "error: no API key for provider '" << model->provider << "'.\n";
+                return 2;
+            }
+            sopts.max_tokens = max_tokens;
+            sopts.temperature = temperature;
+            std::string cwd = core::path::current_working_dir().value_or(".");
+            return tui::modes::run_interactive(*model, sopts, cwd);
+        }
         std::cerr << kUsage;
         return 1;
     }

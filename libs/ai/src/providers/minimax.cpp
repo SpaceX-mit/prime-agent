@@ -15,7 +15,7 @@ std::shared_ptr<EventStream> MiniMaxProvider::stream(
     const Context& ctx,
     const StreamOptions& opts) {
 
-    // MiniMax uses the OpenAI protocol at api.minimaxi.chat.
+    // MiniMax uses the OpenAI protocol at api.minimaxi.com (mainland China).
     // The base_url is already set on the model entry; the OpenAI provider
     // now uses model.base_url, so we delegate directly.
     auto provider = std::make_shared<OpenAICompletionsProvider>();

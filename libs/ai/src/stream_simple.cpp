@@ -32,10 +32,14 @@ std::shared_ptr<EventStream> stream_simple(
         try {
             auto sub = provider->stream_simple(model, ctx, opts);
             // Drain sub stream into our stream.
-            while (auto ev = sub->try_pull()) {
+            // Use blocking pull() — try_pull() would race with the provider thread
+            // and miss events pushed after our first poll.
+            int drained = 0;
+            while (auto ev = sub->pull()) {
                 stream->push(std::move(*ev));
+                drained++;
             }
-            // Drain remaining via result().
+            // sub->pull() returned nullopt → sub is finished. Now get final result.
             auto res = sub->result();
             if (res) stream->end(std::move(res.value()));
             else stream->end_with_error(res.error());

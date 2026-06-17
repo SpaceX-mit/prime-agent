@@ -2,7 +2,7 @@
 //
 // MiniMax (稀宇科技 / MiniMax) — Chinese AI company.
 //
-// API is OpenAI-compatible at https://api.minimaxi.chat/v1
+// API is OpenAI-compatible at https://api.minimaxi.com/v1
 // Authentication: Authorization: Bearer <MINIMAX_API_KEY>
 //
 // Models (publicly known as of 2025):

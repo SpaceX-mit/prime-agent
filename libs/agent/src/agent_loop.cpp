@@ -58,7 +58,9 @@ std::shared_ptr<AgentEventStream> run_agent_loop(
             std::shared_ptr<pi::ai::AssistantMessage> final_msg;
             {
                 auto sub = pi::ai::stream_simple(config.model, ctx, config.stream_opts);
-                while (auto ev = sub->try_pull()) {
+                // Use blocking pull() so we don't race past events pushed by
+                // the provider's detached worker thread.
+                while (auto ev = sub->pull()) {
                     pi::ai::Message m;
                     m = ev->partial;
                     out->push(AgentEvent::message_update(std::move(m), *ev));

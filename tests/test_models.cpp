@@ -48,7 +48,7 @@ TEST_CASE("MiniMax models registered") {
     REQUIRE(m1 != nullptr);
     CHECK(m1->provider == "minimax");
     CHECK(m1->api == ApiKind::OpenAICompletions);
-    CHECK(m1->base_url == "https://api.minimaxi.chat/v1");
+    CHECK(m1->base_url == "https://api.minimaxi.com/v1");
     CHECK(m1->context_window >= 200'000);
 
     auto* m2 = find_model("minimax/MiniMax-VL-01");

@@ -110,6 +110,66 @@ int run_interactive(const pi::ai::Model& model,
 
     ChatState state;
 
+    // Session persistence: create a new session file under the default
+    // sessions directory. Each user message, assistant message, tool
+    // result, and compaction event is appended as a JSONL entry. This
+    // mirrors upstream pi's interactive-mode session behavior.
+    std::string session_path = coding::SessionManager::default_dir() + "/"
+                              + coding::SessionManager::new_session_id() + ".jsonl";
+    {
+        coding::SessionManager sm(session_path);
+        coding::SessionHeader hdr;
+        hdr.id = sm.path().substr(sm.path().find_last_of('/') + 1,
+                                   sm.path().size() - sm.path().find_last_of('/') - 6);
+        hdr.timestamp = "2026-06-17T00:00:00Z";  // overwritten below
+        // Use real timestamp.
+        std::time_t t = std::time(nullptr);
+        std::tm tm{};
+        gmtime_r(&t, &tm);
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+        hdr.timestamp = buf;
+        hdr.cwd = cwd;
+        sm.initialize(hdr);
+        state.session = new coding::SessionManager(session_path);
+    }
+    // Helper: serialize any Message variant to JSON.
+    auto message_to_json = [](const pi::ai::Message& m) -> pi::core::Json {
+        return std::visit([](auto& v) -> pi::core::Json {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, pi::ai::UserMessage>) {
+                return v.to_json();
+            } else if constexpr (std::is_same_v<T, pi::ai::AssistantMessage>) {
+                return v.to_json();
+            } else {
+                // ToolResultMessage — synthesize JSON.
+                pi::core::Json j;
+                j["role"] = "toolResult";
+                j["toolCallId"] = v.tool_call_id;
+                j["toolName"] = v.tool_name;
+                j["isError"] = v.is_error;
+                pi::core::Json arr = pi::core::Json::array();
+                for (auto& c : v.content) {
+                    if (std::holds_alternative<pi::ai::TextContent>(c)) {
+                        arr.push_back({{"type", "text"},
+                                        {"text", std::get<pi::ai::TextContent>(c).text}});
+                    }
+                }
+                j["content"] = arr;
+                return j;
+            }
+        }, m);
+    };
+
+    // Helper: append a message entry to the session.
+    auto append_message_entry = [&](const pi::ai::Message& m) {
+        if (!state.session) return;
+        coding::SessionEntry e;
+        e.type = "message";
+        e.data["message"] = message_to_json(m);
+        state.session->append_entry(e);
+    };
+
     // Single mutex protects ALL of ChatState. Reads in render_chat are
     // outside the lock; the background agent thread holds it only while
     // mutating state.
@@ -205,7 +265,8 @@ int run_interactive(const pi::ai::Model& model,
         tui.render();
 
         std::thread([&state_mtx, &state, &tui, &refresh_chat, &footer, &theme,
-                      messages = std::move(messages), cfg = std::move(cfg_in)]() mutable {
+                      messages = std::move(messages), cfg = std::move(cfg_in),
+                      append_message_entry_fn = append_message_entry]() mutable {
             auto stream = pi::agent::run_agent_loop(std::move(messages), std::move(cfg));
             std::vector<pi::ai::Message> final_messages;
             stream->drain([&](const pi::agent::AgentEvent& ev) {
@@ -230,6 +291,11 @@ int run_interactive(const pi::ai::Model& model,
                             }
                             break;
                         }
+                        case pi::agent::AgentEvent::Kind::MessageEnd:
+                            // Persist each finalized message (assistant or
+                            // tool result) to the session JSONL.
+                            append_message_entry_fn(ev.message);
+                            break;
                         case pi::agent::AgentEvent::Kind::ToolExecutionEnd: {
                             std::ostringstream o;
                             o << theme.dim << "← " << ev.tool_name
@@ -241,9 +307,6 @@ int run_interactive(const pi::ai::Model& model,
                         case pi::agent::AgentEvent::Kind::AgentEnd:
                             // Persist the full conversation history so the
                             // next prompt starts with multi-turn context.
-                            // Mirrors upstream pi's
-                            //   state.messages.push(event.message)
-                            // pattern but appends the entire batch at once.
                             state.history = ev.messages;
                             final_messages = ev.messages;
                             break;
@@ -268,9 +331,6 @@ int run_interactive(const pi::ai::Model& model,
                 state.turns.push_back("");  // blank line separator
                 state.status.clear();
                 state.redraw_needed = true;
-                // Defensive: if the loop emitted no AgentEnd (shouldn't
-                // happen, but be safe), fall back to using just the
-                // appended history we already set.
                 (void)final_messages;
             }
             footer->set_status("");

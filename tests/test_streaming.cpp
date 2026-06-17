@@ -290,42 +290,43 @@ TEST_CASE("stream_simple on background thread does not block caller (INC-002)") 
 // sees prior turns.
 // ===========================================================================
 
+namespace {
+// Local scripted provider (file-scope so multi-turn + continue tests share it).
+class LocalProvider : public Provider {
+public:
+    LocalProvider(std::vector<std::string> chunks, int delay_ms)
+        : chunks_(std::move(chunks)), delay_ms_(delay_ms) {}
+    ApiKind api() const override { return ApiKind::OpenAICompletions; }
+    std::string name() const override { return "scripted-multi"; }
+    std::shared_ptr<EventStream> stream(
+        const Model&, const Context&, const StreamOptions&) override {
+        auto out = std::make_shared<EventStream>();
+        std::thread([out, chunks = chunks_, delay_ms = delay_ms_]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+            AssistantMessage m;
+            out->push(AssistantMessageEvent::start(m));
+            out->push(AssistantMessageEvent::text_start(0, m));
+            TextContent tc;
+            tc.text = chunks[0];
+            m.content.push_back(tc);
+            out->push(AssistantMessageEvent::text_delta(0, chunks[0], m));
+            out->push(AssistantMessageEvent::text_end(0, chunks[0], m));
+            m.stop_reason = "stop";
+            out->push(AssistantMessageEvent::done("stop", m));
+            out->end(std::move(m));
+        }).detach();
+        return out;
+    }
+private:
+    std::vector<std::string> chunks_;
+    int delay_ms_;
+};
+}  // namespace
+
 TEST_CASE("AgentEnd event carries full conversation history (multi-turn)") {
     // Drives agent_loop twice in sequence; verifies the second call sees
     // messages from the first call. This is the multi-turn invariant that
     // upstream pi maintains via state.messages.push(event.message).
-
-    // Local scripted provider (the file-level one is in an anonymous
-    // namespace and not visible here).
-    class LocalProvider : public Provider {
-    public:
-        LocalProvider(std::vector<std::string> chunks, int delay_ms)
-            : chunks_(std::move(chunks)), delay_ms_(delay_ms) {}
-        ApiKind api() const override { return ApiKind::OpenAICompletions; }
-        std::string name() const override { return "scripted-multi"; }
-        std::shared_ptr<EventStream> stream(
-            const Model&, const Context&, const StreamOptions&) override {
-            auto out = std::make_shared<EventStream>();
-            std::thread([out, chunks = chunks_, delay_ms = delay_ms_]() {
-                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-                AssistantMessage m;
-                out->push(AssistantMessageEvent::start(m));
-                out->push(AssistantMessageEvent::text_start(0, m));
-                TextContent tc;
-                tc.text = chunks[0];
-                m.content.push_back(tc);
-                out->push(AssistantMessageEvent::text_delta(0, chunks[0], m));
-                out->push(AssistantMessageEvent::text_end(0, chunks[0], m));
-                m.stop_reason = "stop";
-                out->push(AssistantMessageEvent::done("stop", m));
-                out->end(std::move(m));
-            }).detach();
-            return out;
-        }
-    private:
-        std::vector<std::string> chunks_;
-        int delay_ms_;
-    };
 
     static bool registered = false;
     if (!registered) {
@@ -389,5 +390,126 @@ TEST_CASE("AgentEnd event carries full conversation history (multi-turn)") {
     auto last_user = std::get<pi::ai::UserMessage>(final2_msgs.at(final2_msgs.size() - 2));
     REQUIRE(!last_user.content.empty());
     CHECK(std::get<pi::ai::TextContent>(last_user.content[0]).text == "second prompt");
+}
+
+TEST_CASE("run_agent_loop_continue works with existing history") {
+    // After V3.1, run_agent_loop_continue takes config.messages and
+    // continues from there without adding a new prompt.
+    static bool registered = false;
+    if (!registered) {
+        ProviderRegistry::instance().register_provider(
+            std::make_shared<LocalProvider>(
+                std::vector<std::string>{"continue-response"}, /*delay_ms=*/10));
+        registered = true;
+    }
+    Model m;
+    m.id = "cont-model";
+    m.provider = "scripted-multi";
+    m.api = ApiKind::OpenAICompletions;
+
+    pi::agent::AgentLoopConfig cfg;
+    cfg.model = m;
+    cfg.tools = {};
+    cfg.stream_opts.api_key = "fake";
+
+    // Pre-populate history ending in a user message.
+    pi::ai::UserMessage prior;
+    prior.content.push_back(TextContent{"prior turn"});
+    cfg.messages.push_back(prior);
+
+    auto stream = pi::agent::run_agent_loop_continue(cfg);
+    std::vector<pi::ai::Message> final_msgs;
+    stream->drain([&](const pi::agent::AgentEvent& e) {
+        if (e.kind == pi::agent::AgentEvent::Kind::AgentEnd) {
+            final_msgs = e.messages;
+        }
+    });
+
+    // Should have at least: 1 user (prior) + 1 assistant (new).
+    CHECK(final_msgs.size() >= 2);
+    auto first = std::get<pi::ai::UserMessage>(final_msgs.front());
+    REQUIRE(!first.content.empty());
+    CHECK(std::get<pi::ai::TextContent>(first.content[0]).text == "prior turn");
+    CHECK(std::holds_alternative<pi::ai::AssistantMessage>(final_msgs.back()));
+}
+
+TEST_CASE("run_agent_loop_continue rejects assistant as last message") {
+    static bool registered = false;
+    if (!registered) {
+        ProviderRegistry::instance().register_provider(
+            std::make_shared<LocalProvider>(
+                std::vector<std::string>{"x"}, /*delay_ms=*/10));
+        registered = true;
+    }
+    Model m;
+    m.id = "cont-model";
+    m.provider = "scripted-multi";
+    m.api = ApiKind::OpenAICompletions;
+
+    pi::agent::AgentLoopConfig cfg;
+    cfg.model = m;
+    cfg.tools = {};
+    cfg.stream_opts.api_key = "fake";
+
+    // Last message is an assistant — should be rejected.
+    pi::ai::AssistantMessage am;
+    am.content.push_back(TextContent{"prev assistant reply"});
+    am.stop_reason = "stop";
+    cfg.messages.push_back(am);
+
+    auto stream = pi::agent::run_agent_loop_continue(cfg);
+
+    bool got_message_end = false;
+    pi::ai::AssistantMessage error_am;
+    stream->drain([&](const pi::agent::AgentEvent& e) {
+        if (e.kind == pi::agent::AgentEvent::Kind::MessageEnd) {
+            got_message_end = true;
+            if (std::holds_alternative<pi::ai::AssistantMessage>(e.message)) {
+                error_am = std::get<pi::ai::AssistantMessage>(e.message);
+            }
+        }
+    });
+    CHECK(got_message_end);
+    CHECK(error_am.stop_reason == "error");
+    CHECK(error_am.error_message.has_value());
+    CHECK(error_am.error_message->find("cannot continue") != std::string::npos);
+}
+
+TEST_CASE("run_agent_loop_continue rejects empty messages") {
+    static bool registered = false;
+    if (!registered) {
+        ProviderRegistry::instance().register_provider(
+            std::make_shared<LocalProvider>(
+                std::vector<std::string>{"x"}, /*delay_ms=*/10));
+        registered = true;
+    }
+    Model m;
+    m.id = "cont-model";
+    m.provider = "scripted-multi";
+    m.api = ApiKind::OpenAICompletions;
+    pi::agent::AgentLoopConfig cfg;
+    cfg.model = m;
+    cfg.stream_opts.api_key = "fake";
+    // cfg.messages is empty
+
+    auto stream = pi::agent::run_agent_loop_continue(cfg);
+
+    // Capture ALL events; we expect a message_end with an error assistant
+    // and an agent_end (which carries an empty messages vector in this
+    // error case).
+    bool got_message_end = false;
+    pi::ai::AssistantMessage error_am;
+    stream->drain([&](const pi::agent::AgentEvent& e) {
+        if (e.kind == pi::agent::AgentEvent::Kind::MessageEnd) {
+            got_message_end = true;
+            if (std::holds_alternative<pi::ai::AssistantMessage>(e.message)) {
+                error_am = std::get<pi::ai::AssistantMessage>(e.message);
+            }
+        }
+    });
+    CHECK(got_message_end);
+    CHECK(error_am.stop_reason == "error");
+    CHECK(error_am.error_message.has_value());
+    CHECK(error_am.error_message->find("no messages") != std::string::npos);
 }
 

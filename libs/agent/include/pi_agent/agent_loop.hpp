@@ -168,6 +168,11 @@ struct AgentLoopConfig {
 
     pi::ai::SimpleStreamOptions stream_opts;
     std::shared_ptr<AbortSignal> signal;
+
+    /// Used by run_agent_loop_continue: the existing conversation history
+    /// (must end in user or toolResult). Ignored by run_agent_loop, which
+    /// uses the `initial_messages` parameter instead.
+    std::vector<pi::ai::Message> messages;
 };
 
 // ---------------------------------------------------------------------------
@@ -191,8 +196,11 @@ std::shared_ptr<AgentEventStream> run_agent_loop(
     AgentLoopConfig config);
 
 /// Continue an existing conversation without adding a new user message.
-/// Used for retries / regenerations where the last message must be user or
-/// tool-result. Throws if there are no messages, or if the last is assistant.
+/// The last message in `config.messages` must be a user or toolResult
+/// (otherwise throws). Mirrors upstream pi's `agentLoopContinue`.
+///
+/// Use case: after a failed LLM call, retry by re-invoking with the same
+/// history — no need to re-send prior turns.
 std::shared_ptr<AgentEventStream> run_agent_loop_continue(
     AgentLoopConfig config);
 

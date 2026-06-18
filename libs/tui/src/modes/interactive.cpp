@@ -228,6 +228,48 @@ int run_interactive(const pi::ai::Model& model,
                 lines.push_back(theme.accent + line + "\x1b[0m");
             }
         }
+        // Soft-wrap each line to the terminal width so long messages
+        // don't get hard-cut by the terminal. We count visible width by
+        // skipping ANSI CSI sequences. CJK width is approximated as 1
+        // (wcwidth is overkill here; if a line ends mid-CJK it just wraps
+        // a column early).
+        auto sz_for_wrap = term.size();
+        int width_for_wrap = std::max(20, sz_for_wrap.second);
+        std::vector<std::string> wrapped;
+        wrapped.reserve(lines.size());
+        for (auto& src : lines) {
+            if (src.empty()) { wrapped.push_back(""); continue; }
+            std::string cur;
+            int vis = 0;
+            for (size_t i = 0; i < src.size(); ) {
+                if (src[i] == '\x1b' && i + 1 < src.size() && src[i+1] == '[') {
+                    size_t j = i + 2;
+                    while (j < src.size() && !((src[j] >= '@' && src[j] <= '~'))) ++j;
+                    if (j < src.size()) ++j;
+                    cur.append(src, i, j - i);
+                    i = j;
+                    continue;
+                }
+                // UTF-8 character: advance over the full multi-byte sequence
+                unsigned char b = static_cast<unsigned char>(src[i]);
+                size_t n = 1;
+                if      ((b & 0xE0) == 0xC0) n = 2;
+                else if ((b & 0xF0) == 0xE0) n = 3;
+                else if ((b & 0xF8) == 0xF0) n = 4;
+                if (i + n > src.size()) n = src.size() - i;
+                cur.append(src, i, n);
+                vis++;
+                i += n;
+                if (vis >= width_for_wrap) {
+                    cur += "\x1b[0m";
+                    wrapped.push_back(std::move(cur));
+                    cur.clear();
+                    vis = 0;
+                }
+            }
+            if (!cur.empty()) wrapped.push_back(std::move(cur));
+        }
+        lines = std::move(wrapped);
         // Viewport: terminal rows minus 2 (input + footer).
         auto sz = term.size();
         int rows = sz.first;

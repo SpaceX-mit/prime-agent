@@ -162,7 +162,8 @@ void Terminal::enter_raw_mode() {
     // as CSI-u sequences with full Unicode codepoints.
     write("\x1b[?2004h");  // bracketed paste mode
     write("\x1b[>1u");     // Kitty disambiguate escape codes
-    write("\x1b[?1000h");  // basic mouse reporting (button events)
+    write("\x1b[?1000h");  // basic mouse reporting
+    write("\x1b[?1003h");  // any-event mouse (includes wheel on more terms)
     write("\x1b[?1006h");  // SGR-encoded mouse reports (modern, unambiguous)
     bracketed_paste_active_ = true;
     flush();
@@ -183,6 +184,7 @@ void Terminal::disable_bracketed_paste_mode() {
 void Terminal::leave_raw_mode() {
     if (!raw_) return;
     write("\x1b[?1006l");
+    write("\x1b[?1003l");
     write("\x1b[?1000l");
     write(pi::core::ansi::show_cursor());
     write(pi::core::ansi::RESET);

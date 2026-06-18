@@ -246,17 +246,25 @@ int run_interactive(const pi::ai::Model& model,
         int end = std::min(total, start + chat_rows);
 
         std::string joined;
+        int emitted = 0;
         for (int i = start; i < end; ++i) {
+            if (emitted) joined += '\n';
             joined += lines[i];
-            joined += '\n';
+            emitted++;
         }
         // Pad with blank lines so input + footer stay anchored at the bottom
-        // even when chat is short.
-        for (int i = end - start; i < chat_rows; ++i) joined += '\n';
-        // Scroll indicator if not at bottom.
+        // even when chat is short. Each iteration adds exactly one line.
+        for (int i = emitted; i < chat_rows; ++i) {
+            if (i) joined += '\n';
+        }
+        // Scroll indicator if not at bottom (replaces last line, not adds).
         if (!follow && total > chat_rows) {
+            // Append on its own line — we already have chat_rows lines, so
+            // overwrite the last padding line.
+            // ponytail: indicator may push input down by 1 if chat is full;
+            // upgrade path: reserve a dedicated row for it.
             joined += theme.dim;
-            joined += "  ↑ scrolled — End to follow\x1b[0m\n";
+            joined += "  ↑ scrolled — End to follow\x1b[0m";
         }
         chat_text->set_text(joined);
     };

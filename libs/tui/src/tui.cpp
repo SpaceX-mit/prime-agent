@@ -47,9 +47,11 @@ void TUI::render() {
             out += "\x1b[0m";
         }
     }
-    out += pi::core::ansi::show_cursor();
-    if (out.size() > pi::core::ansi::hide_cursor().size() +
-                     pi::core::ansi::show_cursor().size()) {
+    // ponytail: keep cursor hidden permanently. Input renders its own
+    // reverse-video cursor; showing the real cursor here produced two
+    // cursors. Upgrade path: re-show + position at input cursor on Enter
+    // if some terminal needs the real cursor for IME.
+    if (out.size() > pi::core::ansi::hide_cursor().size()) {
         term_.write(out);
         term_.flush();
     }

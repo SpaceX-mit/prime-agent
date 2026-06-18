@@ -169,6 +169,10 @@ struct AgentLoopConfig {
     pi::ai::SimpleStreamOptions stream_opts;
     std::shared_ptr<AbortSignal> signal;
 
+    /// System prompt sent with every turn (base coding-agent instructions +
+    /// any project context-file injection). Empty → no system prompt.
+    std::string system_prompt;
+
     /// Used by run_agent_loop_continue: the existing conversation history
     /// (must end in user or toolResult). Ignored by run_agent_loop, which
     /// uses the `initial_messages` parameter instead.

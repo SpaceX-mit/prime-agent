@@ -308,7 +308,8 @@ std::string render_message(const pi::ai::Message& m, const Theme& theme, int wid
 int run_interactive(const pi::ai::Model& model,
                     pi::ai::SimpleStreamOptions opts,
                     std::string cwd,
-                    std::string resume_path) {
+                    std::string resume_path,
+                    std::string system_prompt) {
 
     Terminal term;
     if (!Terminal::is_tty()) {
@@ -920,6 +921,7 @@ int run_interactive(const pi::ai::Model& model,
                 cfg.model = model;
                 cfg.tools = std::move(tools);
                 cfg.stream_opts = opts;
+                cfg.system_prompt = system_prompt;
 
                 spawn_agent(std::move(msgs), std::move(cfg));
             }

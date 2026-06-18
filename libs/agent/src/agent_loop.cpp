@@ -53,6 +53,7 @@ std::shared_ptr<AgentEventStream> run_agent_loop(
             pi::ai::Context ctx;
             ctx.messages = llm_messages;
             ctx.tools = tool_specs;
+            if (!config.system_prompt.empty()) ctx.system_prompt = config.system_prompt;
 
             // Stream one turn, with retry + exponential backoff on
             // transient errors (429 / 5xx / timeouts). We buffer the
@@ -259,6 +260,7 @@ std::shared_ptr<AgentEventStream> run_agent_loop_continue(
             pi::ai::Context ctx;
             ctx.messages = llm_messages;
             ctx.tools = tool_specs;
+            if (!config.system_prompt.empty()) ctx.system_prompt = config.system_prompt;
 
             std::shared_ptr<pi::ai::AssistantMessage> final_msg;
             {

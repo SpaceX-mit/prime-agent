@@ -26,6 +26,7 @@ namespace pi::tui::modes {
 int run_interactive(const pi::ai::Model& model,
                     pi::ai::SimpleStreamOptions opts,
                     std::string cwd,
-                    std::string resume_path = "");
+                    std::string resume_path = "",
+                    std::string system_prompt = "");
 
 }  // namespace pi::tui::modes

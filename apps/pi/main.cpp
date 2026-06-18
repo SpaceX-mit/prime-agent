@@ -19,6 +19,7 @@
 #include "pi_ai/types.hpp"
 #include "pi_coding/auth_storage.hpp"
 #include "pi_coding/compaction.hpp"
+#include "pi_coding/context_files.hpp"
 #include "pi_coding/html_export.hpp"
 #include "pi_coding/modes/rpc.hpp"
 #include "pi_coding/session_manager.hpp"
@@ -44,6 +45,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <unistd.h>
 
 using namespace pi;
 
@@ -70,6 +72,7 @@ OPTIONS:
       --export <path>         Export a session to HTML (V2)
   -p <text>                   Print mode (agent loop with bash/read/write/edit)
       --json                  Emit JSON events instead of plain text
+      --no-context-files, -nc Disable AGENTS.md / CLAUDE.md discovery + loading
       --mode <mode>           One of: interactive (default), rpc, json
       --list-sessions         List all sessions (JSON)
 
@@ -177,7 +180,9 @@ int pick_session(const std::vector<coding::SessionInfo>& sessions) {
 }
 
 int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
-                         const ai::SimpleStreamOptions& opts, bool as_json) {
+                         const ai::SimpleStreamOptions& opts, bool as_json,
+                         const std::string& resume_path = "",
+                         bool no_context_files = false) {
     // Build tools.
     std::string cwd = core::path::current_working_dir().value_or(".");
     std::vector<agent::ToolPtr> tools;
@@ -186,12 +191,53 @@ int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
     tools.push_back(std::make_shared<coding::tools::WriteTool>(cwd));
     tools.push_back(std::make_shared<coding::tools::EditTool>(cwd));
 
-    // Build initial messages.
+    // Session: resume an existing JSONL session (seed history with its prior
+    // messages so the new prompt continues the conversation) or start a fresh
+    // one. New entries are appended so the next resume sees the full thread.
+    std::unique_ptr<coding::SessionManager> session;
     std::vector<ai::Message> messages;
+    std::string session_path = resume_path;
+    if (!resume_path.empty()) {
+        coding::SessionManager sm(resume_path);
+        auto hdr = sm.read_header();
+        if (hdr) {
+            auto entries = sm.read_entries();
+            auto ctx = coding::build_session_context(*hdr, entries, false);
+            messages = std::move(ctx.messages);
+        } else {
+            std::cerr << "error: cannot read session header at " << resume_path << "\n";
+            return 2;
+        }
+        session = std::make_unique<coding::SessionManager>(resume_path);
+    } else {
+        session_path = coding::SessionManager::default_dir() + "/"
+                     + coding::SessionManager::new_session_id() + ".jsonl";
+        coding::SessionManager sm(session_path);
+        coding::SessionHeader hdr;
+        auto slash = sm.path().find_last_of('/');
+        hdr.id = sm.path().substr(slash + 1, sm.path().size() - slash - 6 - 1);
+        std::time_t t = std::time(nullptr);
+        std::tm tm{};
+        gmtime_r(&t, &tm);
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+        hdr.timestamp = buf;
+        hdr.cwd = cwd;
+        sm.initialize(hdr);
+        session = std::make_unique<coding::SessionManager>(session_path);
+    }
+
+    // Append the new user prompt to history + session.
     {
         ai::UserMessage um;
         um.content.push_back(ai::TextContent{prompt});
         messages.push_back(um);
+        if (session) {
+            coding::SessionEntry e;
+            e.type = "message";
+            e.data["message"] = um.to_json();
+            session->append_entry(e);
+        }
     }
 
     // Run agent loop.
@@ -199,6 +245,13 @@ int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
     cfg.model = model;
     cfg.tools = std::move(tools);
     cfg.stream_opts = opts;
+    // System prompt: base coding-agent instructions + project context files
+    // (AGENTS.md / CLAUDE.md), unless suppressed by --no-context-files.
+    {
+        std::vector<coding::ContextFile> ctxf;
+        if (!no_context_files) ctxf = coding::load_project_context_files(cwd);
+        cfg.system_prompt = coding::build_system_prompt(cwd, ctxf);
+    }
 
     auto stream = agent::run_agent_loop(std::move(messages), std::move(cfg));
 
@@ -255,6 +308,33 @@ int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
                 }
                 if (std::holds_alternative<ai::AssistantMessage>(ev.message)) {
                     last_assistant = std::get<ai::AssistantMessage>(ev.message);
+                }
+                // Persist every finalized message (assistant or tool result)
+                // so the session can be resumed later, matching interactive.
+                if (session) {
+                    coding::SessionEntry e;
+                    e.type = "message";
+                    e.data["message"] = std::visit([](auto& v) -> core::Json {
+                        using T = std::decay_t<decltype(v)>;
+                        if constexpr (std::is_same_v<T, ai::UserMessage> ||
+                                      std::is_same_v<T, ai::AssistantMessage>) {
+                            return v.to_json();
+                        } else {
+                            core::Json j;
+                            j["role"] = "toolResult";
+                            j["toolCallId"] = v.tool_call_id;
+                            j["toolName"] = v.tool_name;
+                            j["isError"] = v.is_error;
+                            core::Json arr = core::Json::array();
+                            for (auto& c : v.content)
+                                if (std::holds_alternative<ai::TextContent>(c))
+                                    arr.push_back({{"type", "text"},
+                                                   {"text", std::get<ai::TextContent>(c).text}});
+                            j["content"] = arr;
+                            return j;
+                        }
+                    }, ev.message);
+                    session->append_entry(e);
                 }
                 break;
             }
@@ -342,6 +422,7 @@ int main(int argc, char** argv) {
     bool rpc_mode = false;
     bool continue_last = false;     // -c
     bool resume_pick = false;       // -r
+    bool no_context_files = false;  // --no-context-files / -nc
     std::string session_id;         // --session
     std::string export_path;        // --export
     std::string prompt;
@@ -409,6 +490,8 @@ int main(int argc, char** argv) {
             export_path = args[++i];
         } else if (a == "--compact") {
             // No-op for now; /compact slash command in interactive mode handles it.
+        } else if (a == "--no-context-files" || a == "-nc") {
+            no_context_files = true;
         } else if (core::str::starts_with(a, "-")) {
             std::cerr << "warn: unknown option: " << a << " (ignored)\n";
         } else {
@@ -500,7 +583,8 @@ int main(int argc, char** argv) {
             sopts.max_tokens = max_tokens;
             sopts.temperature = temperature;
             std::string cwd = core::path::current_working_dir().value_or(".");
-            // Resolve resume target: --session <id>, -c (newest), or -r (newest for now).
+            // Resolve resume target: --session <id> (prefix), -r (numbered
+            // picker), or -c (newest).
             std::string resume_path;
             if (!session_id.empty()) {
                 resume_path = coding::SessionManager::resolve_id_prefix(session_id);
@@ -508,16 +592,26 @@ int main(int argc, char** argv) {
                     std::cerr << "error: no unique session matches '" << session_id << "'\n";
                     return 2;
                 }
-            } else if (continue_last || resume_pick) {
+            } else if (resume_pick) {
+                auto all = coding::SessionManager::list_all();
+                int idx = pick_session(all);
+                if (idx >= 0) resume_path = all[idx].path;
+                // idx < 0 → cancelled: start a fresh session.
+            } else if (continue_last) {
                 auto all = coding::SessionManager::list_all();
                 if (all.empty()) {
                     std::cerr << "error: no saved sessions to resume\n";
                     return 2;
                 }
                 resume_path = all.front().path;
-                // ponytail: -r treated same as -c (newest); full picker UI when needed.
             }
-            return tui::modes::run_interactive(*model, sopts, cwd, resume_path);
+            std::string sys_prompt;
+            {
+                std::vector<coding::ContextFile> ctxf;
+                if (!no_context_files) ctxf = coding::load_project_context_files(cwd);
+                sys_prompt = coding::build_system_prompt(cwd, ctxf);
+            }
+            return tui::modes::run_interactive(*model, sopts, cwd, resume_path, sys_prompt);
         }
         if (!rpc_mode) {
             std::cerr << kUsage;
@@ -525,10 +619,22 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Unix citizen: accept piped stdin. `pi -p "-"` reads the whole prompt
+    // from stdin; `cat x | pi "explain"` appends the piped content to the
+    // prompt. Only consume stdin when it is NOT a tty (i.e. piped/redirected).
     if (prompt == "-") {
         std::ostringstream ss;
         ss << std::cin.rdbuf();
         prompt = ss.str();
+    } else if (!::isatty(STDIN_FILENO)) {
+        std::ostringstream ss;
+        ss << std::cin.rdbuf();
+        std::string piped = ss.str();
+        if (!piped.empty()) {
+            if (prompt.empty()) prompt = piped;
+            else prompt += "\n\n" + piped;
+            has_prompt = true;
+        }
     }
 
     const ai::Model* model = nullptr;
@@ -585,5 +691,26 @@ int main(int argc, char** argv) {
                                             core::path::current_working_dir().value_or("."),
                                             [&](const std::string& p){ return resolve_api_key(p); });
     }
-    return run_agent_print_mode(*model, prompt, opts, as_json);
+
+    // Resolve a session to continue for print mode: --session <id> (prefix),
+    // -c (newest), or -r (interactive numbered picker).
+    std::string print_resume_path;
+    if (!session_id.empty()) {
+        print_resume_path = coding::SessionManager::resolve_id_prefix(session_id);
+        if (print_resume_path.empty()) {
+            std::cerr << "error: no unique session matches '" << session_id << "'\n";
+            return 2;
+        }
+    } else if (resume_pick) {
+        auto all = coding::SessionManager::list_all();
+        int idx = pick_session(all);
+        if (idx < 0) { std::cerr << "no session selected\n"; return 1; }
+        print_resume_path = all[idx].path;
+    } else if (continue_last) {
+        auto all = coding::SessionManager::list_all();
+        if (all.empty()) { std::cerr << "error: no saved sessions to continue\n"; return 2; }
+        print_resume_path = all.front().path;
+    }
+
+    return run_agent_print_mode(*model, prompt, opts, as_json, print_resume_path, no_context_files);
 }

@@ -5,6 +5,7 @@ add_library(pi_tui STATIC
     src/theme.cpp
     src/render_util.cpp
     src/message_render.cpp
+    src/markdown_render.cpp
     src/think_filter.cpp
     src/components/input.cpp
     src/components/editor.cpp

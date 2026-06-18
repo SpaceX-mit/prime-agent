@@ -27,6 +27,7 @@
 #include "pi_core/path.hpp"
 #include "pi_core/strutil.hpp"
 #include "pi_tui/components/input.hpp"
+#include "pi_tui/markdown_render.hpp"
 #include "pi_tui/message_render.hpp"
 #include "pi_tui/render_util.hpp"
 #include "pi_tui/terminal.hpp"
@@ -289,7 +290,7 @@ std::string render_message(const pi::ai::Message& m, const Theme& theme, int wid
         } else if constexpr (std::is_same_v<T, pi::ai::AssistantMessage>) {
             for (auto& c : v.content) {
                 if (std::holds_alternative<pi::ai::TextContent>(c))
-                    o << msg::assistant_text(std::get<pi::ai::TextContent>(c).text, theme, width) << "\n";
+                    o << md::render(std::get<pi::ai::TextContent>(c).text, theme, width) << "\n";
                 else if (std::holds_alternative<pi::ai::ToolCall>(c))
                     o << msg::tool_execution(std::get<pi::ai::ToolCall>(c).name, "",
                                              msg::ToolState::Success, theme, width) << "\n";
@@ -570,9 +571,13 @@ int run_interactive(const pi::ai::Model& model,
                                         final_text += std::get<pi::ai::TextContent>(c).text;
                                 }
                                 // Only fall back to MessageEnd's text when the
-                                // stream produced nothing (no deltas).
+                                // stream produced nothing (no deltas). A
+                                // complete block is safe to markdown-render
+                                // (partial streamed chunks are not, so the
+                                // delta path stays raw).
                                 if (!final_text.empty() && state.current_text.empty()) {
-                                    emit_text += final_text;
+                                    emit_text += md::render(final_text, theme, ui.width());
+                                    emit_text += "\n";
                                     state.current_text += final_text;
                                 }
                                 // Error / abort in red, with a humanized message.

@@ -628,15 +628,24 @@ int run_interactive(const pi::ai::Model& model,
         // (which would treat PgUp/PgDn as garbage characters).
         if (k->kind == pi::tui::KeyEvent::Kind::PageUp ||
             k->kind == pi::tui::KeyEvent::Kind::PageDown ||
+            k->kind == pi::tui::KeyEvent::Kind::WheelUp ||
+            k->kind == pi::tui::KeyEvent::Kind::WheelDown ||
             k->kind == pi::tui::KeyEvent::Kind::End) {
             auto sz = term.size();
             int page = std::max(1, sz.first - 2 - 1);
+            int wheel = 3;
             std::lock_guard<std::mutex> g(state_mtx);
             if (k->kind == pi::tui::KeyEvent::Kind::PageUp) {
                 state.follow = false;
                 state.scroll_back += page;
             } else if (k->kind == pi::tui::KeyEvent::Kind::PageDown) {
                 state.scroll_back = std::max(0, state.scroll_back - page);
+                if (state.scroll_back == 0) state.follow = true;
+            } else if (k->kind == pi::tui::KeyEvent::Kind::WheelUp) {
+                state.follow = false;
+                state.scroll_back += wheel;
+            } else if (k->kind == pi::tui::KeyEvent::Kind::WheelDown) {
+                state.scroll_back = std::max(0, state.scroll_back - wheel);
                 if (state.scroll_back == 0) state.follow = true;
             } else {  // End
                 state.follow = true;

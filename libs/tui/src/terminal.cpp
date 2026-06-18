@@ -162,6 +162,8 @@ void Terminal::enter_raw_mode() {
     // as CSI-u sequences with full Unicode codepoints.
     write("\x1b[?2004h");  // bracketed paste mode
     write("\x1b[>1u");     // Kitty disambiguate escape codes
+    write("\x1b[?1000h");  // basic mouse reporting (button events)
+    write("\x1b[?1006h");  // SGR-encoded mouse reports (modern, unambiguous)
     bracketed_paste_active_ = true;
     flush();
 }
@@ -180,6 +182,8 @@ void Terminal::disable_bracketed_paste_mode() {
 
 void Terminal::leave_raw_mode() {
     if (!raw_) return;
+    write("\x1b[?1006l");
+    write("\x1b[?1000l");
     write(pi::core::ansi::show_cursor());
     write(pi::core::ansi::RESET);
     write(pi::core::ansi::exit_alt_screen());
@@ -358,6 +362,28 @@ std::optional<KeyEvent> Terminal::try_read_key(int timeout_ms) {
                                 }
                             } catch (...) {}
                         }
+                    }
+
+                    // SGR mouse: ESC [ < Cb ; Cx ; Cy [Mm]
+                    // Cb = button code (64=wheel up, 65=wheel down, 0=left
+                    // press, 32+drag, etc.). M = press, m = release.
+                    if (seq.size() >= 4 && seq[0] == '[' && seq[1] == '<' &&
+                        (seq.back() == 'M' || seq.back() == 'm')) {
+                        std::string body(seq.begin() + 2, seq.end() - 1);
+                        int cb = 0;
+                        try { cb = std::stoi(body); } catch (...) { cb = 0; }
+                        // Only act on press (M). Release (m) is ignored —
+                        // wheel events come as press only anyway.
+                        if (seq.back() == 'M') {
+                            if (cb == 64) {
+                                KeyEvent ev; ev.kind = KeyEvent::Kind::WheelUp; return ev;
+                            }
+                            if (cb == 65) {
+                                KeyEvent ev; ev.kind = KeyEvent::Kind::WheelDown; return ev;
+                            }
+                        }
+                        // Other mouse events: drop silently for now.
+                        return std::nullopt;
                     }
 
                     return parse_escape_sequence(seq);

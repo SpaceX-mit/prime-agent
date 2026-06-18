@@ -240,6 +240,28 @@ int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
         }
     }
 
+    // Auto-compaction: summarize the older prefix if the conversation would
+    // overflow the model's context window before this turn.
+    {
+        coding::CompactionSettings cs;
+        if (model.context_window > 0) cs.target_context = model.context_window;
+        if (coding::should_compact(messages, cs)) {
+            auto cr = coding::compact(model, opts, messages, cs);
+            if (!cr.aborted && cr.drop_count > 0) {
+                messages = cr.kept_messages;
+                if (!as_json)
+                    std::cerr << "[auto-compacted " << cr.drop_count << " earlier messages]\n";
+                if (session) {
+                    coding::SessionEntry e;
+                    e.type = "compaction";
+                    e.data["summary"] = cr.summary;
+                    e.data["droppedCount"] = cr.drop_count;
+                    session->append_entry(e);
+                }
+            }
+        }
+    }
+
     // Run agent loop.
     agent::AgentLoopConfig cfg;
     cfg.model = model;

@@ -453,6 +453,55 @@ int run_interactive(const pi::ai::Model& model,
         ui.emit(o.str());
     }
 
+    // Compaction (manual /compact and automatic pre-turn). Returns true if a
+    // compaction actually happened. `automatic` only changes the wording.
+    // Must be called with NO lock held (it takes state_mtx internally).
+    auto compaction_settings = [&]() {
+        pi::coding::CompactionSettings s;
+        if (model.context_window > 0) s.target_context = model.context_window;
+        return s;
+    };
+    auto do_compact = [&](bool automatic) -> bool {
+        std::vector<pi::ai::Message> hist_copy;
+        {
+            std::lock_guard<std::mutex> g(state_mtx);
+            hist_copy = state.history;
+        }
+        if (hist_copy.empty()) {
+            if (!automatic) ui.emit(theme.dim + "(no history to compact)\n\x1b[0m");
+            return false;
+        }
+        ui.set_footer(automatic ? "auto-compacting…" : "compacting…");
+        auto compact_res = pi::coding::compact(model, opts, hist_copy, compaction_settings());
+        bool did = false;
+        if (compact_res.aborted) {
+            ui.emit(theme.error + "(compaction failed)\n\x1b[0m");
+        } else if (compact_res.drop_count == 0) {
+            if (!automatic) ui.emit(theme.dim + "(nothing to compact)\n\x1b[0m");
+        } else {
+            {
+                std::lock_guard<std::mutex> g(state_mtx);
+                state.history = compact_res.kept_messages;
+                state.compaction_count++;
+            }
+            std::ostringstream o;
+            o << theme.dim << "[" << (automatic ? "auto-" : "")
+              << "compacted " << compact_res.drop_count << " earlier messages ("
+              << state.compaction_count << " total)]\n\x1b[0m";
+            ui.emit(o.str());
+            if (state.session) {
+                pi::coding::SessionEntry e;
+                e.type = "compaction";
+                e.data["summary"] = compact_res.summary;
+                e.data["droppedCount"] = compact_res.drop_count;
+                state.session->append_entry(e);
+            }
+            did = true;
+        }
+        ui.set_footer("");
+        return did;
+    };
+
     // Spawn the agent loop on a detached background thread so the main
     // loop keeps polling keys (INC-002).
     auto spawn_agent = [&](std::vector<pi::ai::Message> messages,
@@ -739,42 +788,7 @@ int run_interactive(const pi::ai::Model& model,
                     continue;
                 }
                 if (cmd == "/compact") {
-                    std::vector<pi::ai::Message> hist_copy;
-                    {
-                        std::lock_guard<std::mutex> g(state_mtx);
-                        hist_copy = state.history;
-                    }
-                    if (hist_copy.empty()) {
-                        ui.emit(theme.dim + "(no history to compact)\n\x1b[0m");
-                        continue;
-                    }
-                    ui.set_footer("compacting…");
-                    pi::coding::CompactionSettings settings;
-                    auto compact_res = pi::coding::compact(model, opts, hist_copy, settings);
-                    if (compact_res.aborted) {
-                        ui.emit(theme.error + "(compaction failed)\n\x1b[0m");
-                    } else if (compact_res.drop_count == 0) {
-                        ui.emit(theme.dim + "(nothing to compact)\n\x1b[0m");
-                    } else {
-                        {
-                            std::lock_guard<std::mutex> g(state_mtx);
-                            state.history = compact_res.kept_messages;
-                            state.compaction_count++;
-                        }
-                        std::ostringstream o;
-                        o << theme.dim << "[compacted " << compact_res.drop_count
-                          << " earlier messages (" << state.compaction_count
-                          << " compactions total)]\n\x1b[0m";
-                        ui.emit(o.str());
-                        if (state.session) {
-                            pi::coding::SessionEntry e;
-                            e.type = "compaction";
-                            e.data["summary"] = compact_res.summary;
-                            e.data["droppedCount"] = compact_res.drop_count;
-                            state.session->append_entry(e);
-                        }
-                    }
-                    ui.set_footer("");
+                    do_compact(/*automatic=*/false);
                     continue;
                 }
                 if (cmd == "/history") {
@@ -903,6 +917,19 @@ int run_interactive(const pi::ai::Model& model,
                     state.history.push_back(pi::ai::UserMessage{});
                     std::get<pi::ai::UserMessage>(state.history.back()).content.push_back(
                         pi::ai::TextContent{text});
+                }
+
+                // Auto-compaction: if the (now including this prompt) history
+                // is about to overflow the model's context window, summarize
+                // the older prefix before sending. Keeps long sessions alive.
+                {
+                    std::vector<pi::ai::Message> hist_snapshot;
+                    {
+                        std::lock_guard<std::mutex> g(state_mtx);
+                        hist_snapshot = state.history;
+                    }
+                    if (pi::coding::should_compact(hist_snapshot, compaction_settings()))
+                        do_compact(/*automatic=*/true);
                 }
 
                 // Build tools and run the agent on a background thread.

@@ -28,4 +28,19 @@ AssistantMessage run_to_completion(
     const Context& ctx,
     const SimpleStreamOptions& opts);
 
+/// Turn a raw provider/transport error string (e.g. "anthropic: HTTP 429
+/// Too Many Requests: {...}") into a short, human-readable sentence the
+/// end user can act on. Falls back to a trimmed version of the original
+/// when the shape isn't recognized. Used by both interactive and print
+/// mode so error reporting is consistent and never dumps raw JSON.
+std::string humanize_stream_error(const std::string& provider,
+                                  const std::string& raw);
+
+/// Classify a provider/transport error string as retryable. Retryable:
+/// HTTP 408/429/500/502/503/504 and transport-level failures (timeouts,
+/// connection errors with no HTTP status). NOT retryable: 4xx client
+/// errors like 400/401/403/404 (retrying won't help). Used by the agent
+/// loop to decide whether to back off and re-issue the request.
+bool is_retryable_stream_error(const std::string& raw);
+
 }  // namespace pi::ai

@@ -29,8 +29,6 @@ struct KeyEvent {
         CtrlW, CtrlX, CtrlY, CtrlZ,
         Resize,
         Paste,
-        WheelUp,
-        WheelDown,
         Unknown,
     };
     Kind kind = Kind::Char;

@@ -309,7 +309,11 @@ int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
     }
 
     if (!as_json && last_assistant.stop_reason == "error") {
-        std::cerr << "\n[error] " << last_assistant.error_message.value_or("(no message)") << "\n";
+        std::cerr << "\n[error] "
+                  << ai::humanize_stream_error(
+                         last_assistant.provider,
+                         last_assistant.error_message.value_or(""))
+                  << "\n";
         return 3;
     }
     if (g_interrupted) return 130;

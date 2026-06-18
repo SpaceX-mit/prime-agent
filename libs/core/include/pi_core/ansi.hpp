@@ -49,6 +49,23 @@ inline std::string show_cursor() { return "\x1b[?25h"; }
 inline std::string enter_alt_screen() { return "\x1b[?1049h"; }
 inline std::string exit_alt_screen() { return "\x1b[?1049l"; }
 
+// DECSTBM — Set Top/Bottom Margins. Defines a vertical scrolling region
+// [top, bottom] (1-indexed, inclusive). Lines outside the region stay
+// fixed; the area inside scrolls. Used to lock a footer to the bottom
+// rows while chat scrolls above. reset_scroll_region() (CSI r with no
+// params) restores full-screen scrolling.
+inline std::string set_scroll_region(int top, int bottom) {
+    return "\x1b[" + std::to_string(top) + ";" + std::to_string(bottom) + "r";
+}
+inline std::string reset_scroll_region() { return "\x1b[r"; }
+
+// DECSC / DECRC — save/restore cursor position AND SGR attributes AND
+// the current scrolling region origin. Preferred over CSI s / CSI u
+// (SCOSC/SCORC) which only save position and are inconsistently
+// implemented across terminals.
+inline std::string save_cursor()    { return "\x1b\x37"; }  // ESC 7
+inline std::string restore_cursor() { return "\x1b\x38"; }  // ESC 8
+
 inline std::string enable_mouse_sgr() { return "\x1b[?1006h\x1b[?1003h"; }
 inline std::string disable_mouse_sgr() { return "\x1b[?1003l\x1b[?1006l"; }
 

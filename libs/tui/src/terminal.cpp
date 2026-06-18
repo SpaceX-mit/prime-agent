@@ -31,9 +31,10 @@ void reset_terminal_quickly() {
     if (orig) {
         ::tcsetattr(STDIN_FILENO, TCSAFLUSH, orig);
     }
-    // Also show cursor + clear styling.
-    ::write(STDOUT_FILENO, "\x1b[?25h\x1b[0m", 8);
-    ::write(STDOUT_FILENO, "\x1b[?1049l", 8);  // leave alt screen
+    // Emergency restore (signal / crash path): reset scroll region, show
+    // cursor, clear styling, disable bracketed paste. No alt-screen to leave.
+    ssize_t rc = ::write(STDOUT_FILENO, "\x1b[r\x1b[?2004l\x1b[?25h\x1b[0m", 21);
+    (void)rc;
 }
 
 void install_signal_handler_once() {
@@ -42,7 +43,21 @@ void install_signal_handler_once() {
     sa.sa_handler = sigwinch_handler;
     ::sigemptyset(&sa.sa_mask);
     ::sigaction(SIGWINCH, &sa, nullptr);
-    // Make sure SIGINT/SIGTERM go to default behavior (immediate process exit).
+    // SIGTERM / SIGHUP: restore the terminal (scroll region, cursor, paste
+    // mode) before dying, so a killed/hung-up session doesn't leave the
+    // user's terminal in raw mode with a locked-off bottom region. We then
+    // re-raise with the default disposition for the real exit. SIGINT is
+    // deliberately NOT trapped here: in raw mode it arrives as a Ctrl-C key
+    // event handled by the interactive loop (two-press abort/quit).
+    struct sigaction term_sa{};
+    term_sa.sa_handler = [](int sig) {
+        reset_terminal_quickly();
+        ::signal(sig, SIG_DFL);
+        ::raise(sig);
+    };
+    ::sigemptyset(&term_sa.sa_mask);
+    ::sigaction(SIGTERM, &term_sa, nullptr);
+    ::sigaction(SIGHUP, &term_sa, nullptr);
 }
 
 KeyEvent parse_escape_sequence(std::string_view seq) {
@@ -153,18 +168,20 @@ void Terminal::enter_raw_mode() {
     g_orig_termios.store(orig);
     install_signal_handler_once();
     raw_ = true;
-    write(pi::core::ansi::enter_alt_screen());
+    // "Well-behaved CLI" mode: we do NOT enter the alternate screen and do
+    // NOT enable mouse reporting. Chat is written directly to the main
+    // screen so it flows into the terminal's own scrollback (mouse wheel
+    // scrolls history natively, text stays after exit, selection/copy work).
+    // The real cursor is hidden: the bottom Input line draws its own
+    // inverse-video cursor block (see components/input.cpp), so showing the
+    // hardware cursor too would produce a confusing double cursor (5e5781b).
     write(pi::core::ansi::hide_cursor());
-    write(pi::core::ansi::clear_screen());
     // V3.7: enable bracketed paste mode and Kitty keyboard protocol
     // (disambiguate flag). Most modern terminals respond to these by
     // wrapping pastes in ESC[200~...ESC[201~ and sending individual keys
     // as CSI-u sequences with full Unicode codepoints.
     write("\x1b[?2004h");  // bracketed paste mode
     write("\x1b[>1u");     // Kitty disambiguate escape codes
-    write("\x1b[?1000h");  // basic mouse reporting
-    write("\x1b[?1003h");  // any-event mouse (includes wheel on more terms)
-    write("\x1b[?1006h");  // SGR-encoded mouse reports (modern, unambiguous)
     bracketed_paste_active_ = true;
     flush();
 }
@@ -183,13 +200,13 @@ void Terminal::disable_bracketed_paste_mode() {
 
 void Terminal::leave_raw_mode() {
     if (!raw_) return;
-    write("\x1b[?1006l");
-    write("\x1b[?1003l");
-    write("\x1b[?1000l");
+    write("\x1b[r");                       // DECSTBM: reset scroll region to full screen
+    write("\x1b[<u");                      // Kitty: pop keyboard protocol flags
+    write("\x1b[?2004l");                  // disable bracketed paste
     write(pi::core::ansi::show_cursor());
     write(pi::core::ansi::RESET);
-    write(pi::core::ansi::exit_alt_screen());
     flush();
+    bracketed_paste_active_ = false;
     auto* orig = g_orig_termios.exchange(nullptr);
     if (orig) {
         ::tcsetattr(STDIN_FILENO, TCSAFLUSH, orig);
@@ -367,24 +384,12 @@ std::optional<KeyEvent> Terminal::try_read_key(int timeout_ms) {
                     }
 
                     // SGR mouse: ESC [ < Cb ; Cx ; Cy [Mm]
-                    // Cb = button code (64=wheel up, 65=wheel down, 0=left
-                    // press, 32+drag, etc.). M = press, m = release.
+                    // We no longer enable mouse reporting (well-behaved CLI
+                    // mode hands the wheel back to the terminal's scrollback),
+                    // so these normally never arrive. If a terminal sends one
+                    // anyway, swallow it rather than leaking garbage to input.
                     if (seq.size() >= 4 && seq[0] == '[' && seq[1] == '<' &&
                         (seq.back() == 'M' || seq.back() == 'm')) {
-                        std::string body(seq.begin() + 2, seq.end() - 1);
-                        int cb = 0;
-                        try { cb = std::stoi(body); } catch (...) { cb = 0; }
-                        // Only act on press (M). Release (m) is ignored —
-                        // wheel events come as press only anyway.
-                        if (seq.back() == 'M') {
-                            if (cb == 64) {
-                                KeyEvent ev; ev.kind = KeyEvent::Kind::WheelUp; return ev;
-                            }
-                            if (cb == 65) {
-                                KeyEvent ev; ev.kind = KeyEvent::Kind::WheelDown; return ev;
-                            }
-                        }
-                        // Other mouse events: drop silently for now.
                         return std::nullopt;
                     }
 

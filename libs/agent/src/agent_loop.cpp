@@ -54,29 +54,65 @@ std::shared_ptr<AgentEventStream> run_agent_loop(
             ctx.messages = llm_messages;
             ctx.tools = tool_specs;
 
-            // Stream one turn.
+            // Stream one turn, with retry + exponential backoff on
+            // transient errors (429 / 5xx / timeouts). We buffer the
+            // streamed events and only flush them to `out` once we have a
+            // non-retryable outcome, so a retried attempt never
+            // double-prints partial text to the UI. The abort signal
+            // interrupts both the wait and further attempts.
             std::shared_ptr<pi::ai::AssistantMessage> final_msg;
             {
-                auto sub = pi::ai::stream_simple(config.model, ctx, config.stream_opts);
-                // Use blocking pull() so we don't race past events pushed by
-                // the provider's detached worker thread.
-                while (auto ev = sub->pull()) {
-                    pi::ai::Message m;
-                    m = ev->partial;
-                    out->push(AgentEvent::message_update(std::move(m), *ev));
-                    if (ev->kind == pi::ai::AssistantMessageEvent::Kind::Done
-                        || ev->kind == pi::ai::AssistantMessageEvent::Kind::Error) {
-                        break;
+                int max_retries = config.stream_opts.max_retries;
+                int attempt = 0;
+                std::vector<AgentEvent> pending;
+                while (true) {
+                    pending.clear();
+                    auto sub = pi::ai::stream_simple(config.model, ctx, config.stream_opts);
+                    while (auto ev = sub->pull()) {
+                        pi::ai::Message m;
+                        m = ev->partial;
+                        pending.push_back(AgentEvent::message_update(std::move(m), *ev));
+                        if (ev->kind == pi::ai::AssistantMessageEvent::Kind::Done
+                            || ev->kind == pi::ai::AssistantMessageEvent::Kind::Error) {
+                            break;
+                        }
                     }
+                    auto res = sub->result();
+                    bool retryable = res && res.value().stop_reason == "error" &&
+                        res.value().error_message &&
+                        pi::ai::is_retryable_stream_error(*res.value().error_message);
+
+                    if (res && retryable && attempt < max_retries && !signal->aborted()) {
+                        // Exponential backoff: 1s, 2s, 4s … capped.
+                        int delay_ms = 1000 << attempt;
+                        if (delay_ms > config.stream_opts.max_retry_delay_ms)
+                            delay_ms = config.stream_opts.max_retry_delay_ms;
+                        ++attempt;
+                        PI_LOG_INFO << "agent_loop: transient error, retry " << attempt
+                                    << "/" << max_retries << " in " << delay_ms << "ms";
+                        // Sleep in short slices so an abort interrupts promptly.
+                        int waited = 0;
+                        while (waited < delay_ms && !signal->aborted()) {
+                            int slice = std::min(100, delay_ms - waited);
+                            std::this_thread::sleep_for(std::chrono::milliseconds(slice));
+                            waited += slice;
+                        }
+                        continue;  // re-issue the request
+                    }
+
+                    // Terminal outcome (success, non-retryable error, or
+                    // retries exhausted): flush buffered events to the UI.
+                    for (auto& e : pending) out->push(std::move(e));
+
+                    if (!res) {
+                        out->push(AgentEvent::message_end(pi::ai::Message{pi::ai::AssistantMessage{}}));
+                        out->push(AgentEvent::agent_end(messages));
+                        out->end();
+                        return;
+                    }
+                    final_msg = std::make_shared<pi::ai::AssistantMessage>(std::move(res.value()));
+                    break;
                 }
-                auto res = sub->result();
-                if (!res) {
-                    out->push(AgentEvent::message_end(pi::ai::Message{pi::ai::AssistantMessage{}}));
-                    out->push(AgentEvent::agent_end(messages));
-                    out->end();
-                    return;
-                }
-                final_msg = std::make_shared<pi::ai::AssistantMessage>(std::move(res.value()));
             }
 
             // Record the assistant message.
@@ -226,24 +262,53 @@ std::shared_ptr<AgentEventStream> run_agent_loop_continue(
 
             std::shared_ptr<pi::ai::AssistantMessage> final_msg;
             {
-                auto sub = pi::ai::stream_simple(config.model, ctx, config.stream_opts);
-                while (auto ev = sub->pull()) {
-                    pi::ai::Message m;
-                    m = ev->partial;
-                    out->push(AgentEvent::message_update(std::move(m), *ev));
-                    if (ev->kind == pi::ai::AssistantMessageEvent::Kind::Done
-                        || ev->kind == pi::ai::AssistantMessageEvent::Kind::Error) {
-                        break;
+                int max_retries = config.stream_opts.max_retries;
+                int attempt = 0;
+                std::vector<AgentEvent> pending;
+                while (true) {
+                    pending.clear();
+                    auto sub = pi::ai::stream_simple(config.model, ctx, config.stream_opts);
+                    while (auto ev = sub->pull()) {
+                        pi::ai::Message m;
+                        m = ev->partial;
+                        pending.push_back(AgentEvent::message_update(std::move(m), *ev));
+                        if (ev->kind == pi::ai::AssistantMessageEvent::Kind::Done
+                            || ev->kind == pi::ai::AssistantMessageEvent::Kind::Error) {
+                            break;
+                        }
                     }
+                    auto res = sub->result();
+                    bool retryable = res && res.value().stop_reason == "error" &&
+                        res.value().error_message &&
+                        pi::ai::is_retryable_stream_error(*res.value().error_message);
+
+                    if (res && retryable && attempt < max_retries && !signal->aborted()) {
+                        int delay_ms = 1000 << attempt;
+                        if (delay_ms > config.stream_opts.max_retry_delay_ms)
+                            delay_ms = config.stream_opts.max_retry_delay_ms;
+                        ++attempt;
+                        PI_LOG_INFO << "agent_loop_continue: transient error, retry "
+                                    << attempt << "/" << max_retries << " in " << delay_ms << "ms";
+                        int waited = 0;
+                        while (waited < delay_ms && !signal->aborted()) {
+                            int slice = std::min(100, delay_ms - waited);
+                            std::this_thread::sleep_for(std::chrono::milliseconds(slice));
+                            waited += slice;
+                        }
+                        continue;
+                    }
+
+                    for (auto& e : pending) out->push(std::move(e));
+
+                    if (!res) {
+                        out->push(AgentEvent::message_end(pi::ai::Message{pi::ai::AssistantMessage{}}));
+                        out->push(AgentEvent::agent_end(messages));
+                        out->end();
+                        return;
+                    }
+                    final_msg = std::make_shared<pi::ai::AssistantMessage>(std::move(res.value()));
+                    break;
                 }
-                auto res = sub->result();
-                if (!res) {
-                    out->push(AgentEvent::message_end(pi::ai::Message{pi::ai::AssistantMessage{}}));
-                    out->push(AgentEvent::agent_end(messages));
-                    out->end();
-                    return;
-                }
-                final_msg = std::make_shared<pi::ai::AssistantMessage>(std::move(res.value()));
             }
 
             pi::ai::Message am{*final_msg};
@@ -258,10 +323,7 @@ std::shared_ptr<AgentEventStream> run_agent_loop_continue(
             }
 
             if (tool_calls.empty() || final_msg->stop_reason != "toolUse") {
-                fprintf(stderr, "[continue] before agent_end: messages.size=%zu\n", messages.size());
-                auto ev = AgentEvent::agent_end(messages);
-                fprintf(stderr, "[continue] after agent_end ctor: ev.messages.size=%zu\n", ev.messages.size());
-                out->push(std::move(ev));
+                out->push(AgentEvent::agent_end(messages));
                 out->end();
                 return;
             }

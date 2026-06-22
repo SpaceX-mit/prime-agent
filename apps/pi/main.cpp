@@ -633,7 +633,8 @@ int main(int argc, char** argv) {
                 if (!no_context_files) ctxf = coding::load_project_context_files(cwd);
                 sys_prompt = coding::build_system_prompt(cwd, ctxf);
             }
-            return tui::modes::run_interactive(*model, sopts, cwd, resume_path, sys_prompt);
+            return tui::modes::run_interactive(*model, sopts, cwd, resume_path, sys_prompt,
+                                               [&](const std::string& p){ return resolve_api_key(p); });
         }
         if (!rpc_mode) {
             std::cerr << kUsage;

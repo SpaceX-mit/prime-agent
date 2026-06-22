@@ -37,6 +37,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <sstream>
@@ -306,17 +307,22 @@ std::string render_message(const pi::ai::Message& m, const Theme& theme, int wid
 
 }  // namespace
 
-int run_interactive(const pi::ai::Model& model,
+int run_interactive(const pi::ai::Model& initial_model,
                     pi::ai::SimpleStreamOptions opts,
                     std::string cwd,
                     std::string resume_path,
-                    std::string system_prompt) {
+                    std::string system_prompt,
+                    std::function<std::string(const std::string&)> key_resolver) {
 
     Terminal term;
     if (!Terminal::is_tty()) {
         std::cerr << "interactive mode requires a TTY\n";
         return 1;
     }
+
+    // Mutable model: /model can switch it at runtime (re-resolving the API
+    // key for the new provider via key_resolver).
+    pi::ai::Model model = initial_model;
 
     Theme theme = Theme::dark();
     term.enter_raw_mode();
@@ -425,7 +431,7 @@ int run_interactive(const pi::ai::Model& model,
           << "  /exit, /quit       Quit the session\n"
           << "  /clear             Clear the screen\n"
           << "  /help              Show this help\n"
-          << "  /model <id>        Switch model (e.g. /model openai/gpt-4o-mini)\n"
+          << "  /model [id]        List models, or switch (e.g. /model openai/gpt-4o-mini)\n"
           << "  /new               Start a fresh conversation\n"
           << "  /sessions          List saved sessions (id · timestamp · #msgs · cwd)\n"
           << "  /resume <id>       Resume the given session id (prefix ok)\n"
@@ -770,9 +776,36 @@ int run_interactive(const pi::ai::Model& model,
                     ui.emit(theme.dim + "(started new conversation)\n\x1b[0m");
                     continue;
                 }
+                if (cmd == "/model") {
+                    // List available models, marking the current one.
+                    std::ostringstream o;
+                    o << theme.dim << "Available models (/model <id> to switch):\n";
+                    for (auto& m : pi::ai::builtin_models()) {
+                        o << (m.id == model.id ? theme.accent + "  * " : theme.dim + "    ")
+                          << m.id << "\x1b[0m\n";
+                    }
+                    ui.emit(o.str());
+                    continue;
+                }
                 if (cmd.rfind("/model ", 0) == 0) {
-                    ui.emit(theme.dim +
-                        "(model switch not yet implemented in V1: " + cmd.substr(7) + ")\x1b[0m\n");
+                    std::string want = std::string(pi::core::str::trim(cmd.substr(7)));
+                    const pi::ai::Model* m = pi::ai::find_model(want);
+                    if (!m) {
+                        ui.emit(theme.error + "(unknown model: " + want +
+                                " — /model to list)\n\x1b[0m");
+                        continue;
+                    }
+                    // Re-resolve the API key for the (possibly new) provider.
+                    std::string key = key_resolver ? key_resolver(m->provider) : "";
+                    if (key.empty()) {
+                        ui.emit(theme.error + "(no API key for provider '" + m->provider +
+                                "' — set the env var or run /login)\n\x1b[0m");
+                        continue;
+                    }
+                    model = *m;
+                    opts.api_key = key;
+                    ui.set_model(model.id);
+                    ui.emit(theme.dim + "(switched to " + model.id + ")\n\x1b[0m");
                     continue;
                 }
                 if (cmd.rfind("/login", 0) == 0) {

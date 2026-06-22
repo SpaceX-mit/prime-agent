@@ -11,6 +11,7 @@
 #include "pi_coding/tools/write_tool.hpp"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -23,10 +24,13 @@ namespace pi::tui::modes {
 /// new entries are appended to the same file. Empty `resume_path`
 /// starts a fresh session under the default sessions directory.
 /// Returns 0 on clean exit, non-zero on error.
+/// `key_resolver(provider)` returns an API key for the given provider name;
+/// used by the /model command to switch models at runtime.
 int run_interactive(const pi::ai::Model& model,
                     pi::ai::SimpleStreamOptions opts,
                     std::string cwd,
                     std::string resume_path = "",
-                    std::string system_prompt = "");
+                    std::string system_prompt = "",
+                    std::function<std::string(const std::string&)> key_resolver = {});
 
 }  // namespace pi::tui::modes

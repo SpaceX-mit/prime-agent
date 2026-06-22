@@ -8,6 +8,8 @@ add_library(pi_ai STATIC
     src/providers/anthropic.cpp
     src/providers/openai.cpp
     src/providers/openai_responses.cpp
+    src/providers/azure_openai.cpp
+    src/providers/bedrock.cpp
     src/providers/google.cpp
     src/providers/mistral.cpp
     src/providers/minimax.cpp

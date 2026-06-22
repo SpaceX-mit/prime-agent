@@ -320,6 +320,40 @@ const std::vector<Model> kMiniMax = {
     },
 };
 
+const std::vector<Model> kBedrock = {
+    {
+        "us.anthropic.claude-sonnet-4-5-20251001-v1:0",
+        "Claude Sonnet 4.5 (Bedrock)",
+        ApiKind::AnthropicMessages,
+        "bedrock", "us-east-1", false, {"text"},
+        {3.0, 15.0, 0.3, 3.75}, 200000, 8192, {},
+    },
+    {
+        "us.anthropic.claude-opus-4-8-20250514-v1:0",
+        "Claude Opus 4.8 (Bedrock)",
+        ApiKind::AnthropicMessages,
+        "bedrock", "us-east-1", true, {"text"},
+        {15.0, 75.0, 1.5, 18.75}, 200000, 32000, {},
+    },
+};
+
+const std::vector<Model> kAzure = {
+    {
+        "gpt-4o",
+        "GPT-4o (Azure)",
+        ApiKind::OpenAICompletions,
+        "azure", "", false, {"text", "image"},
+        {2.5, 10.0, 1.25, 0}, 128000, 16384, {},
+    },
+    {
+        "gpt-4o-mini",
+        "GPT-4o mini (Azure)",
+        ApiKind::OpenAICompletions,
+        "azure", "", false, {"text", "image"},
+        {0.15, 0.60, 0.075, 0}, 128000, 16384, {},
+    },
+};
+
 const std::vector<Model> kAll = [] {
     std::vector<Model> v;
     v.insert(v.end(), kAnthropic.begin(), kAnthropic.end());
@@ -327,6 +361,8 @@ const std::vector<Model> kAll = [] {
     v.insert(v.end(), kGoogle.begin(), kGoogle.end());
     v.insert(v.end(), kMistral.begin(), kMistral.end());
     v.insert(v.end(), kMiniMax.begin(), kMiniMax.end());
+    v.insert(v.end(), kBedrock.begin(), kBedrock.end());
+    v.insert(v.end(), kAzure.begin(), kAzure.end());
     return v;
 }();
 }

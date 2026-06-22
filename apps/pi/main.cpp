@@ -465,6 +465,7 @@ int main(int argc, char** argv) {
     std::string api_key_override;
     std::optional<int> max_tokens;
     std::optional<double> temperature;
+    std::optional<ai::ThinkingLevel> thinking_level;
 
     for (size_t i = 0; i < args.size(); ++i) {
         auto& a = args[i];
@@ -511,6 +512,16 @@ int main(int argc, char** argv) {
             if (i + 1 >= args.size()) { std::cerr << "error: --temperature requires an argument\n"; return 2; }
             try { temperature = std::stod(args[++i]); }
             catch (...) { std::cerr << "error: invalid --temperature\n"; return 2; }
+        } else if (a == "--thinking") {
+            if (i + 1 >= args.size()) { std::cerr << "error: --thinking requires an argument\n"; return 2; }
+            std::string tl = args[++i];
+            if      (tl == "off")     thinking_level = ai::ThinkingLevel::Off;
+            else if (tl == "minimal") thinking_level = ai::ThinkingLevel::Minimal;
+            else if (tl == "low")     thinking_level = ai::ThinkingLevel::Low;
+            else if (tl == "medium")  thinking_level = ai::ThinkingLevel::Medium;
+            else if (tl == "high")    thinking_level = ai::ThinkingLevel::High;
+            else if (tl == "xhigh")   thinking_level = ai::ThinkingLevel::XHigh;
+            else { std::cerr << "error: unknown thinking level: " << tl << " (off/minimal/low/medium/high/xhigh)\n"; return 2; }
         } else if (a == "-c" || a == "--continue") {
             continue_last = true;
         } else if (a == "-r" || a == "--resume") {
@@ -617,6 +628,7 @@ int main(int argc, char** argv) {
             }
             sopts.max_tokens = max_tokens;
             sopts.temperature = temperature;
+            sopts.reasoning = thinking_level;
             std::string cwd = core::path::current_working_dir().value_or(".");
             // Resolve resume target: --session <id> (prefix), -r (numbered
             // picker), or -c (newest).
@@ -713,6 +725,7 @@ int main(int argc, char** argv) {
     opts.api_key = !api_key_override.empty() ? api_key_override : resolve_api_key(model->provider);
     opts.max_tokens = max_tokens;
     opts.temperature = temperature;
+    opts.reasoning = thinking_level;
     if (opts.api_key->empty()) {
         std::cerr << "error: no API key for provider '" << model->provider << "'.\n"
                   << "Set the appropriate environment variable, e.g.\n"

@@ -23,6 +23,26 @@ std::string build_request_body(const Model& model, const Context& ctx,
     if (opts.temperature) body["temperature"] = *opts.temperature;
     body["stream"] = true;
 
+    // Extended thinking (claude-3-7+ / claude-4+). Requires the
+    // interleaved-thinking-2025-05-14 beta header and the thinking block in the
+    // request. budget_tokens must be ≤ max_tokens.
+    const auto* sopts = &opts;
+    if (sopts && sopts->reasoning && *sopts->reasoning != ThinkingLevel::Off) {
+        int budget = 0;
+        switch (*sopts->reasoning) {
+            case ThinkingLevel::Minimal: budget =  1024; break;
+            case ThinkingLevel::Low:     budget =  4096; break;
+            case ThinkingLevel::Medium:  budget = 10000; break;
+            case ThinkingLevel::High:    budget = 16000; break;
+            case ThinkingLevel::XHigh:   budget = 32000; break;
+            default: budget = 8000;
+        }
+        // Ensure budget <= max_tokens
+        int max_tok = body["max_tokens"].get<int>();
+        if (budget > max_tok) budget = max_tok / 2;
+        body["thinking"] = {{"type", "enabled"}, {"budget_tokens", budget}};
+    }
+
     // System prompt.
     if (ctx.system_prompt && !ctx.system_prompt->empty()) {
         body["system"] = *ctx.system_prompt;
@@ -250,6 +270,10 @@ std::shared_ptr<EventStream> AnthropicProvider::stream(
         req.headers["x-api-key"] = api_key;
         req.headers["anthropic-version"] = "2023-06-01";
         req.headers["accept"] = "text/event-stream";
+        // Extended-thinking requires the interleaved-thinking beta header.
+        const auto* sopts = &opts;
+        if (sopts && sopts->reasoning && *sopts->reasoning != ThinkingLevel::Off)
+            req.headers["anthropic-beta"] = "interleaved-thinking-2025-05-14";
         for (auto& [k, v] : opts.extra_headers) req.headers[k] = v;
 
         // Apply model headers too.

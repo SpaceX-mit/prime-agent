@@ -219,10 +219,11 @@ struct StreamOptions {
     int max_retries = 2;
     int max_retry_delay_ms = 60'000;
     std::map<std::string, std::string> extra_headers;
+    std::optional<ThinkingLevel> reasoning;  // extended thinking level
 };
 
 struct SimpleStreamOptions : StreamOptions {
-    std::optional<ThinkingLevel> reasoning;
+    // reasoning is now in StreamOptions; SimpleStreamOptions kept for ABI compat.
 };
 
 // ---------------------------------------------------------------------------

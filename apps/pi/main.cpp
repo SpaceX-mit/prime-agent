@@ -27,6 +27,7 @@
 #include "pi_coding/skills.hpp"
 #include "pi_coding/tools/bash_tool.hpp"
 #include "pi_coding/tools/edit_tool.hpp"
+#include "pi_coding/tools/fetch_tool.hpp"
 #include "pi_coding/tools/read_tool.hpp"
 #include "pi_coding/tools/write_tool.hpp"
 #include "pi_core/ansi.hpp"
@@ -193,6 +194,7 @@ int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
     tools.push_back(std::make_shared<coding::tools::ReadTool>(cwd));
     tools.push_back(std::make_shared<coding::tools::WriteTool>(cwd));
     tools.push_back(std::make_shared<coding::tools::EditTool>(cwd));
+    tools.push_back(std::make_shared<coding::tools::FetchTool>());
 
     // Session: resume an existing JSONL session (seed history with its prior
     // messages so the new prompt continues the conversation) or start a fresh

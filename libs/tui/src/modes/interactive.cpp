@@ -20,6 +20,7 @@
 #include "pi_ai/stream_simple.hpp"
 #include "pi_coding/auth_storage.hpp"
 #include "pi_coding/compaction.hpp"
+#include "pi_coding/tools/fetch_tool.hpp"
 #include "pi_coding/oauth.hpp"
 #include "pi_coding/session_manager.hpp"
 #include "pi_coding/skills.hpp"
@@ -993,6 +994,7 @@ int run_interactive(const pi::ai::Model& initial_model,
                 tools.push_back(std::make_shared<pi::coding::tools::ReadTool>(cwd));
                 tools.push_back(std::make_shared<pi::coding::tools::WriteTool>(cwd));
                 tools.push_back(std::make_shared<pi::coding::tools::EditTool>(cwd));
+                tools.push_back(std::make_shared<pi::coding::tools::FetchTool>());
 
                 std::vector<pi::ai::Message> msgs;
                 {

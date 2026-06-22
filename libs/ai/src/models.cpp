@@ -99,6 +99,33 @@ const std::vector<Model> kOpenAI = {
         100'000,
         {},
     },
+    // OpenAI Responses API models (newer endpoint, provider "openai-responses")
+    {
+        "o4-mini",
+        "OpenAI o4-mini",
+        ApiKind::OpenAICompletions,
+        "openai-responses",
+        "api.openai.com",
+        true,
+        {"text"},
+        {1.10, 4.40, 0.275, 0},
+        200'000,
+        100'000,
+        {},
+    },
+    {
+        "gpt-4.1",
+        "GPT-4.1",
+        ApiKind::OpenAICompletions,
+        "openai-responses",
+        "api.openai.com",
+        false,
+        {"text", "image"},
+        {2.0, 8.0, 0.5, 0},
+        1'000'000,
+        32768,
+        {},
+    },
 };
 
 const std::vector<Model> kGoogle = {

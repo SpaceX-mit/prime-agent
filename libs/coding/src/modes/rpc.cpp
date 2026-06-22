@@ -12,6 +12,7 @@
 #include "pi_coding/skills.hpp"
 #include "pi_coding/tools/bash_tool.hpp"
 #include "pi_coding/tools/edit_tool.hpp"
+#include "pi_coding/tools/fetch_tool.hpp"
 #include "pi_coding/tools/find_tool.hpp"
 #include "pi_coding/tools/grep_tool.hpp"
 #include "pi_coding/tools/ls_tool.hpp"
@@ -169,6 +170,7 @@ struct RpcSession {
             std::make_shared<pi::coding::tools::GrepTool>(cwd),
             std::make_shared<pi::coding::tools::FindTool>(cwd),
             std::make_shared<pi::coding::tools::LsTool>(cwd),
+            std::make_shared<pi::coding::tools::FetchTool>(),
         };
     }
 

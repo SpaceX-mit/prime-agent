@@ -147,6 +147,11 @@ public:
         out_tok_ = out_tok;
     }
 
+    void set_context_window(int cw) {
+        std::lock_guard<std::mutex> g(mtx_);
+        context_window_ = cw;
+    }
+
     void set_model(const std::string& m) {
         std::lock_guard<std::mutex> g(mtx_);
         model_ = m;
@@ -196,6 +201,17 @@ private:
             if (!left.empty()) left += "  ";
             left += "\xE2\x86\x91" + fmt_tokens(in_tok_);   // ↑in
             left += " \xE2\x86\x93" + fmt_tokens(out_tok_); // ↓out
+            // Context usage %, colour-coded like upstream (>90% red, >70% yellow).
+            if (context_window_ > 0) {
+                int used = in_tok_ + out_tok_;
+                int pct  = (int)((100LL * used) / context_window_);
+                if (pct > 100) pct = 100;
+                char buf[12]; snprintf(buf, sizeof(buf), "%d%%", pct);
+                std::string ctx_str = std::string(buf) + "/" + fmt_tokens(context_window_);
+                if (pct > 90)      left += " " + theme_.error   + ctx_str + "\x1b[0m";
+                else if (pct > 70) left += " " + theme_.warning + ctx_str + "\x1b[0m";
+                else               left += " " + ctx_str;
+            }
         }
         std::string right = model_;
 
@@ -256,6 +272,7 @@ private:
     std::string model_;
     int in_tok_ = 0;
     int out_tok_ = 0;
+    int context_window_ = 0;  // model context window size for ctx% display
 };
 
 /// Mutable agent-loop state shared between the main loop and the
@@ -335,6 +352,7 @@ int run_interactive(const pi::ai::Model& initial_model,
 
     Ui ui(term, theme, input);
     ui.set_model(model.id);
+    if (model.context_window > 0) ui.set_context_window(model.context_window);
 
     ChatState state;
 
@@ -442,6 +460,7 @@ int run_interactive(const pi::ai::Model& initial_model,
           << "  /compact           Summarize earlier messages to free context\n"
           << "  /login <provider>  Configure provider authentication\n"
           << "  /skills            List loaded skills\n"
+          << "  /logout <provider>  Remove saved auth for a provider\n"
           << "  /tree              Session branch view (not yet wired)\n"
           << "  /history           Dump current state.history (diagnostic)\n"
           << "\x1b[0m";
@@ -826,6 +845,20 @@ int run_interactive(const pi::ai::Model& initial_model,
                     } else {
                         ui.emit(theme.dim +
                             "(/login anthropic: OAuth framework present, flow not wired in V2)\n\x1b[0m");
+                    }
+                    continue;
+                }
+                if (cmd.rfind("/logout", 0) == 0) {
+                    std::string provider = cmd.size() > 7
+                        ? std::string(pi::core::str::trim(cmd.substr(7))) : "";
+                    if (provider.empty()) {
+                        ui.emit(theme.error +
+                            "Usage: /logout <provider>  (e.g. /logout anthropic)\n\x1b[0m");
+                    } else {
+                        coding::AuthStorage auth(
+                            pi::core::path::home_dir().value_or("/tmp") + "/.pi/agent/auth.json");
+                        auth.remove(provider);
+                        ui.emit(theme.dim + "(removed auth for '" + provider + "')\n\x1b[0m");
                     }
                     continue;
                 }

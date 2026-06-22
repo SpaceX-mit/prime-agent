@@ -8,6 +8,7 @@ add_library(pi_coding STATIC
     src/tools/find.cpp
     src/tools/ls.cpp
     src/tools/fetch.cpp
+    src/tools/web_search.cpp
     src/session_manager.cpp
     src/settings_manager.cpp
     src/auth_storage.cpp

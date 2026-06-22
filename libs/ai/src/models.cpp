@@ -354,6 +354,16 @@ const std::vector<Model> kAzure = {
     },
 };
 
+
+const std::vector<Model> kOpenRouter = {
+    {"openai/gpt-4o","GPT-4o via OpenRouter",ApiKind::OpenAICompletions,"openrouter","",false,{"text","image"},{2.5,10.0,0,0},128000,16384,{}},
+    {"anthropic/claude-sonnet-4-5","Claude Sonnet 4.5 via OpenRouter",ApiKind::OpenAICompletions,"openrouter","",false,{"text"},{3.0,15.0,0,0},200000,8192,{}},
+};
+
+const std::vector<Model> kCloudflare = {
+    {"@cf/meta/llama-3.1-8b-instruct","Llama 3.1 8B (Cloudflare)",ApiKind::OpenAICompletions,"cloudflare","",false,{"text"},{0,0,0,0},128000,4096,{}},
+};
+
 const std::vector<Model> kAll = [] {
     std::vector<Model> v;
     v.insert(v.end(), kAnthropic.begin(), kAnthropic.end());
@@ -363,6 +373,8 @@ const std::vector<Model> kAll = [] {
     v.insert(v.end(), kMiniMax.begin(), kMiniMax.end());
     v.insert(v.end(), kBedrock.begin(), kBedrock.end());
     v.insert(v.end(), kAzure.begin(), kAzure.end());
+    v.insert(v.end(), kOpenRouter.begin(), kOpenRouter.end());
+    v.insert(v.end(), kCloudflare.begin(), kCloudflare.end());
     return v;
 }();
 }

@@ -657,21 +657,22 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Unix citizen: accept piped stdin. `pi -p "-"` reads the whole prompt
-    // from stdin; `cat x | pi "explain"` appends the piped content to the
-    // prompt. Only consume stdin when it is NOT a tty (i.e. piped/redirected).
-    if (prompt == "-") {
-        std::ostringstream ss;
-        ss << std::cin.rdbuf();
-        prompt = ss.str();
-    } else if (!::isatty(STDIN_FILENO)) {
-        std::ostringstream ss;
-        ss << std::cin.rdbuf();
-        std::string piped = ss.str();
-        if (!piped.empty()) {
-            if (prompt.empty()) prompt = piped;
-            else prompt += "\n\n" + piped;
-            has_prompt = true;
+    // Unix citizen: accept piped stdin for print mode.
+    // Skip in RPC mode — RPC reads stdin itself in a command loop.
+    if (!rpc_mode) {
+        if (prompt == "-") {
+            std::ostringstream ss;
+            ss << std::cin.rdbuf();
+            prompt = ss.str();
+        } else if (!::isatty(STDIN_FILENO)) {
+            std::ostringstream ss;
+            ss << std::cin.rdbuf();
+            std::string piped = ss.str();
+            if (!piped.empty()) {
+                if (prompt.empty()) prompt = piped;
+                else prompt += "\n\n" + piped;
+                has_prompt = true;
+            }
         }
     }
 

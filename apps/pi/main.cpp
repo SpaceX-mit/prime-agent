@@ -187,7 +187,8 @@ int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
                          const ai::SimpleStreamOptions& opts, bool as_json,
                          const std::string& resume_path = "",
                          bool no_context_files = false,
-                         bool no_skills = false) {
+                         bool no_skills = false,
+                         const std::string& name = "") {
     // Build tools.
     std::string cwd = core::path::current_working_dir().value_or(".");
     std::vector<agent::ToolPtr> tools;
@@ -232,6 +233,11 @@ int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
         hdr.cwd = cwd;
         sm.initialize(hdr);
         session = std::make_unique<coding::SessionManager>(session_path);
+        // If a name was provided, persist it as a session_info entry.
+        if (!name.empty()) {
+            coding::SessionEntry e; e.type = "session_info"; e.data["name"] = name;
+            session->append_entry(e);
+        }
     }
 
     // Append the new user prompt to history + session.
@@ -458,6 +464,7 @@ int main(int argc, char** argv) {
     bool resume_pick = false;       // -r
     bool no_context_files = false;  // --no-context-files / -nc
     bool no_skills = false;         // --no-skills
+    std::string session_name;       // --name
     std::string session_id;         // --session
     std::string export_path;        // --export
     std::string prompt;
@@ -528,6 +535,9 @@ int main(int argc, char** argv) {
             continue_last = true;
         } else if (a == "-r" || a == "--resume") {
             resume_pick = true;
+        } else if (a == "--name") {
+            if (i + 1 >= args.size()) { std::cerr << "error: --name requires an argument\n"; return 2; }
+            session_name = args[++i];
         } else if (a == "--session") {
             if (i + 1 >= args.size()) { std::cerr << "error: --session requires an argument\n"; return 2; }
             session_id = args[++i];
@@ -769,5 +779,5 @@ int main(int argc, char** argv) {
     }
 
     return run_agent_print_mode(*model, prompt, opts, as_json, print_resume_path,
-                                no_context_files, no_skills);
+                                no_context_files, no_skills, session_name);
 }

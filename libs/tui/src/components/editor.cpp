@@ -33,8 +33,14 @@ Editor::Editor(Theme theme) : theme_(std::move(theme)) {}
 
 void Editor::set_prompt(std::string p) { prompt_ = std::move(p); }
 void Editor::set_placeholder(std::string s) { placeholder_ = std::move(s); }
-void Editor::set_text(std::string s) { text_ = std::move(s); cursor_ = text_.size(); }
+void Editor::set_text(std::string s) { text_ = std::move(s); cursor_ = text_.size(); undo_stack_.clear(); redo_stack_.clear(); }
 
+// Save current state for undo. Clears redo stack (new branch).
+void Editor::push_undo() {
+    if (undo_stack_.size() >= kMaxUndoDepth) undo_stack_.pop_front();
+    undo_stack_.push_back({text_, cursor_});
+    redo_stack_.clear();
+}
 bool Editor::take_submit() {
     bool v = submit_pending_;
     submit_pending_ = false;
@@ -58,37 +64,15 @@ void Editor::clear_history() {
     saved_.clear();
 }
 
-void Editor::insert_char(char c) {
-    text_.insert(text_.begin() + (long)cursor_, c);
-    cursor_++;
-}
-void Editor::insert_str(std::string s) {
-    text_.insert(text_.begin() + (long)cursor_, s.begin(), s.end());
-    cursor_ += s.size();
-}
-void Editor::delete_back() {
-    if (cursor_ == 0) return;
-    size_t prev = utf8_prev(text_, cursor_);
-    text_.erase(text_.begin() + (long)prev, text_.begin() + (long)cursor_);
-    cursor_ = prev;
-}
-void Editor::delete_forward() {
-    if (cursor_ >= text_.size()) return;
-    size_t nxt = utf8_next(text_, cursor_);
-    text_.erase(text_.begin() + (long)cursor_, text_.begin() + (long)nxt);
-}
-void Editor::kill_to_eol() {
-    size_t eol = line_end(cursor_);
-    text_.erase(text_.begin() + (long)cursor_, text_.begin() + (long)eol);
-}
-void Editor::kill_to_sol() {
-    size_t sol = line_start(cursor_);
-    text_.erase(text_.begin() + (long)sol, text_.begin() + (long)cursor_);
-    cursor_ = sol;
-}
+void Editor::insert_char(char c) { push_undo(); text_.insert(text_.begin() + (long)cursor_, c); cursor_++; }
+void Editor::insert_str(std::string s) { push_undo(); text_.insert(text_.begin() + (long)cursor_, s.begin(), s.end()); cursor_ += s.size(); }
+void Editor::delete_back() { if (cursor_ == 0) return; push_undo(); size_t prev = utf8_prev(text_, cursor_); text_.erase(text_.begin() + (long)prev, text_.begin() + (long)cursor_); cursor_ = prev; }
+void Editor::delete_forward() { if (cursor_ >= text_.size()) return; push_undo(); size_t nxt = utf8_next(text_, cursor_); text_.erase(text_.begin() + (long)cursor_, text_.begin() + (long)nxt); }
+void Editor::kill_to_eol() { push_undo(); size_t eol = line_end(cursor_); text_.erase(text_.begin() + (long)cursor_, text_.begin() + (long)eol); }
+void Editor::kill_to_sol() { push_undo(); size_t sol = line_start(cursor_); text_.erase(text_.begin() + (long)sol, text_.begin() + (long)cursor_); cursor_ = sol; }
 void Editor::kill_word_back() {
+    push_undo();
     size_t p = cursor_;
-    // Skip trailing spaces of the word we're deleting.
     while (p > 0 && std::isspace((unsigned char)text_[p - 1])) --p;
     while (p > 0 && !std::isspace((unsigned char)text_[p - 1])) --p;
     text_.erase(text_.begin() + (long)p, text_.begin() + (long)cursor_);
@@ -255,6 +239,22 @@ bool Editor::on_key(const KeyEvent& ev) {
             return true;
         case KeyEvent::Kind::CtrlW:
             kill_word_back();
+            return true;
+        case KeyEvent::Kind::CtrlZ:  // undo
+            if (!undo_stack_.empty()) {
+                redo_stack_.push_back({text_, cursor_});
+                auto& s = undo_stack_.back();
+                text_ = s.text; cursor_ = s.cursor;
+                undo_stack_.pop_back();
+            }
+            return true;
+        case KeyEvent::Kind::CtrlY:  // redo
+            if (!redo_stack_.empty()) {
+                undo_stack_.push_back({text_, cursor_});
+                auto& s = redo_stack_.back();
+                text_ = s.text; cursor_ = s.cursor;
+                redo_stack_.pop_back();
+            }
             return true;
         case KeyEvent::Kind::CtrlJ:
         case KeyEvent::Kind::CtrlM:

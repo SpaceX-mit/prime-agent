@@ -11,7 +11,7 @@
 
 namespace pi::tui::components {
 
-/// Multi-line text editor with history and Ctrl-J submit.
+/// Multi-line text editor with history, Ctrl-J submit, and undo/redo.
 /// - Enter        : newline
 /// - Ctrl-J / Ctrl-Enter : submit
 /// - Ctrl-C       : cancel submit (set cancel_pending)
@@ -23,6 +23,8 @@ namespace pi::tui::components {
 /// - Ctrl-K       : kill to end of line
 /// - Ctrl-U       : kill to start of line
 /// - Ctrl-W       : kill word before cursor
+/// - Ctrl-Z       : undo
+/// - Ctrl-Y       : redo
 class Editor : public Component {
 public:
     explicit Editor(Theme theme);
@@ -60,6 +62,13 @@ private:
     bool submit_pending_ = false;
     bool cancel_pending_ = false;
 
+    // Undo/redo: each entry is (text, cursor). push_undo() saves current
+    // state before every mutating operation. Ctrl-Z pops undo; Ctrl-Y re-does.
+    static constexpr size_t kMaxUndoDepth = 100;
+    struct UndoState { std::string text; size_t cursor; };
+    std::deque<UndoState> undo_stack_;
+    std::deque<UndoState> redo_stack_;
+
     void insert_char(char c);
     void insert_str(std::string s);
     void delete_back();
@@ -67,6 +76,7 @@ private:
     void kill_to_eol();
     void kill_to_sol();
     void kill_word_back();
+    void push_undo();           // save state before mutation
 
     /// Cursor helpers (byte offsets into text_).
     size_t line_start(size_t pos) const;

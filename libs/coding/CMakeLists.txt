@@ -12,6 +12,7 @@ add_library(pi_coding STATIC
     src/auth_storage.cpp
     src/compaction.cpp
     src/context_files.cpp
+    src/skills.cpp
     src/modes/rpc.cpp
     src/html_export.cpp
     src/oauth.cpp

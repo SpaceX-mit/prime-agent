@@ -24,6 +24,7 @@
 #include "pi_coding/modes/rpc.hpp"
 #include "pi_coding/session_manager.hpp"
 #include "pi_coding/settings_manager.hpp"
+#include "pi_coding/skills.hpp"
 #include "pi_coding/tools/bash_tool.hpp"
 #include "pi_coding/tools/edit_tool.hpp"
 #include "pi_coding/tools/read_tool.hpp"
@@ -73,6 +74,7 @@ OPTIONS:
   -p <text>                   Print mode (agent loop with bash/read/write/edit)
       --json                  Emit JSON events instead of plain text
       --no-context-files, -nc Disable AGENTS.md / CLAUDE.md discovery + loading
+      --no-skills             Disable skill discovery and loading
       --mode <mode>           One of: interactive (default), rpc, json
       --list-sessions         List all sessions (JSON)
 
@@ -182,7 +184,8 @@ int pick_session(const std::vector<coding::SessionInfo>& sessions) {
 int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
                          const ai::SimpleStreamOptions& opts, bool as_json,
                          const std::string& resume_path = "",
-                         bool no_context_files = false) {
+                         bool no_context_files = false,
+                         bool no_skills = false) {
     // Build tools.
     std::string cwd = core::path::current_working_dir().value_or(".");
     std::vector<agent::ToolPtr> tools;
@@ -268,11 +271,16 @@ int run_agent_print_mode(const ai::Model& model, const std::string& prompt,
     cfg.tools = std::move(tools);
     cfg.stream_opts = opts;
     // System prompt: base coding-agent instructions + project context files
-    // (AGENTS.md / CLAUDE.md), unless suppressed by --no-context-files.
+    // (AGENTS.md / CLAUDE.md) + an <available_skills> block, unless suppressed.
     {
         std::vector<coding::ContextFile> ctxf;
         if (!no_context_files) ctxf = coding::load_project_context_files(cwd);
-        cfg.system_prompt = coding::build_system_prompt(cwd, ctxf);
+        std::string sp = coding::build_system_prompt(cwd, ctxf);
+        if (!no_skills) {
+            auto skills = coding::load_skills(cwd);
+            sp += coding::format_skills_for_prompt(skills);
+        }
+        cfg.system_prompt = std::move(sp);
     }
 
     auto stream = agent::run_agent_loop(std::move(messages), std::move(cfg));
@@ -445,6 +453,7 @@ int main(int argc, char** argv) {
     bool continue_last = false;     // -c
     bool resume_pick = false;       // -r
     bool no_context_files = false;  // --no-context-files / -nc
+    bool no_skills = false;         // --no-skills
     std::string session_id;         // --session
     std::string export_path;        // --export
     std::string prompt;
@@ -514,6 +523,8 @@ int main(int argc, char** argv) {
             // No-op for now; /compact slash command in interactive mode handles it.
         } else if (a == "--no-context-files" || a == "-nc") {
             no_context_files = true;
+        } else if (a == "--no-skills") {
+            no_skills = true;
         } else if (core::str::starts_with(a, "-")) {
             std::cerr << "warn: unknown option: " << a << " (ignored)\n";
         } else {
@@ -632,6 +643,10 @@ int main(int argc, char** argv) {
                 std::vector<coding::ContextFile> ctxf;
                 if (!no_context_files) ctxf = coding::load_project_context_files(cwd);
                 sys_prompt = coding::build_system_prompt(cwd, ctxf);
+                if (!no_skills) {
+                    auto skills = coding::load_skills(cwd);
+                    sys_prompt += coding::format_skills_for_prompt(skills);
+                }
             }
             return tui::modes::run_interactive(*model, sopts, cwd, resume_path, sys_prompt,
                                                [&](const std::string& p){ return resolve_api_key(p); });
@@ -735,5 +750,6 @@ int main(int argc, char** argv) {
         print_resume_path = all.front().path;
     }
 
-    return run_agent_print_mode(*model, prompt, opts, as_json, print_resume_path, no_context_files);
+    return run_agent_print_mode(*model, prompt, opts, as_json, print_resume_path,
+                                no_context_files, no_skills);
 }

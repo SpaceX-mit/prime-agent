@@ -22,6 +22,7 @@
 #include "pi_coding/compaction.hpp"
 #include "pi_coding/oauth.hpp"
 #include "pi_coding/session_manager.hpp"
+#include "pi_coding/skills.hpp"
 #include "pi_core/ansi.hpp"
 #include "pi_core/log.hpp"
 #include "pi_core/path.hpp"
@@ -438,6 +439,7 @@ int run_interactive(const pi::ai::Model& initial_model,
           << "  /continue          Resume the most recent session\n"
           << "  /compact           Summarize earlier messages to free context\n"
           << "  /login <provider>  Configure provider authentication\n"
+          << "  /skills            List loaded skills\n"
           << "  /tree              Session branch view (not yet wired)\n"
           << "  /history           Dump current state.history (diagnostic)\n"
           << "\x1b[0m";
@@ -925,6 +927,21 @@ int run_interactive(const pi::ai::Model& initial_model,
                     o << theme.dim << "(resumed " << ctx.messages.size()
                       << " messages from " << target << ")\n\x1b[0m";
                     ui.emit(o.str());
+                    continue;
+                }
+                if (cmd == "/skills") {
+                    auto skills = pi::coding::load_skills(cwd);
+                    if (skills.empty()) {
+                        ui.emit(theme.dim + "(no skills found — add SKILL.md files under ~/.pi/agent/skills/ or .pi/skills/)\n\x1b[0m");
+                    } else {
+                        std::ostringstream o;
+                        o << theme.dim << "Loaded skills (" << skills.size() << "):\n";
+                        for (auto& s : skills) {
+                            o << "  " << theme.accent << s.name << "\x1b[0m"
+                              << theme.dim << "  " << s.description << "\x1b[0m\n";
+                        }
+                        ui.emit(o.str());
+                    }
                     continue;
                 }
                 if (cmd == "/tree") {
